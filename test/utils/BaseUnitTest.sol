@@ -31,6 +31,7 @@ contract BaseUnitTest is Helpers, Test {
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
     bytes32 public constant M_SWAPPER_ROLE = keccak256("M_SWAPPER_ROLE");
     bytes32 public constant YIELD_RECIPIENT_MANAGER_ROLE = keccak256("YIELD_RECIPIENT_MANAGER_ROLE");
+    bytes32 public constant HOOK_MANAGER_ROLE = keccak256("HOOK_MANAGER_ROLE");
 
     MockM public mToken;
     MockRateOracle public rateOracle;
@@ -44,6 +45,7 @@ contract BaseUnitTest is Helpers, Test {
     address public admin = makeAddr("admin");
     address public freezeManager = makeAddr("freezeManager");
     address public earnerManager = makeAddr("earnerManager");
+    address public hookManager = makeAddr("hookManager");
     address public yieldRecipient = makeAddr("yieldRecipient");
     address public yieldRecipientManager = makeAddr("yieldRecipientManager");
 

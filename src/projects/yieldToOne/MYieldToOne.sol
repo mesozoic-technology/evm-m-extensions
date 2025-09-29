@@ -214,7 +214,7 @@ contract MYieldToOne is IMYieldToOne, MYieldToOneStorageLayout, MExtension, Free
      * @param recipient The address whose account balance will be incremented.
      * @param amount    The present amount of tokens to mint.`
      */
-    function _mint(address recipient, uint256 amount) internal override {
+    function _mint(address recipient, uint256 amount) internal virtual override {
         MYieldToOneStorageStruct storage $ = _getMYieldToOneStorageLocation();
 
         // NOTE: Can be `unchecked` because the max amount of $M is never greater than `type(uint240).max`.
@@ -231,7 +231,7 @@ contract MYieldToOne is IMYieldToOne, MYieldToOneStorageLayout, MExtension, Free
      * @param account The address whose account balance will be decremented.
      * @param amount  The present amount of tokens to burn.
      */
-    function _burn(address account, uint256 amount) internal override {
+    function _burn(address account, uint256 amount) internal virtual override {
         MYieldToOneStorageStruct storage $ = _getMYieldToOneStorageLocation();
 
         // NOTE: Can be `unchecked` because `_revertIfInsufficientBalance` is used in MExtension.
@@ -249,7 +249,7 @@ contract MYieldToOne is IMYieldToOne, MYieldToOneStorageLayout, MExtension, Free
      * @param recipient The recipient's address.
      * @param amount    The amount to be transferred.
      */
-    function _update(address sender, address recipient, uint256 amount) internal override {
+    function _update(address sender, address recipient, uint256 amount) internal virtual override {
         MYieldToOneStorageStruct storage $ = _getMYieldToOneStorageLocation();
 
         // NOTE: Can be `unchecked` because `_revertIfInsufficientBalance` for `sender` is used in MExtension.
