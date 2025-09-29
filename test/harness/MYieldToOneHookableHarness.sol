@@ -15,19 +15,9 @@ contract MYieldToOneHookableHarness is MYieldToOneHookable {
         address admin,
         address freezeManager,
         address yieldRecipientManager,
-        address hookManager,
-        address hookContract
+        address hookManager
     ) public override initializer {
-        super.initialize(
-            name,
-            symbol,
-            yieldRecipient,
-            admin,
-            freezeManager,
-            yieldRecipientManager,
-            hookManager,
-            hookContract
-        );
+        super.initialize(name, symbol, yieldRecipient, admin, freezeManager, yieldRecipientManager, hookManager);
     }
 
     function setBalanceOf(address account, uint256 amount) external {

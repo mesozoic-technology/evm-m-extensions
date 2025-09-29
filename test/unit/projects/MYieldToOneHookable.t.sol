@@ -65,14 +65,15 @@ contract MYieldToOneHookableUnitTests is BaseUnitTest {
                     admin,
                     freezeManager,
                     yieldRecipientManager,
-                    hookManager,
-                    address(hookContract)
+                    hookManager
                 ),
                 mExtensionDeployOptions
             )
         );
 
         registrar.setEarner(address(mYieldToOneHookable), true);
+        vm.prank(hookManager);
+        mYieldToOneHookable.setHook(address(hookContract));
     }
 
     /* ============ initialize ============ */
@@ -84,7 +85,6 @@ contract MYieldToOneHookableUnitTests is BaseUnitTest {
         assertEq(mYieldToOneHookable.mToken(), address(mToken));
         assertEq(mYieldToOneHookable.swapFacility(), address(swapFacility));
         assertEq(mYieldToOneHookable.yieldRecipient(), yieldRecipient);
-        assertEq(mYieldToOneHookable.hook(), address(hookContract));
 
         assertTrue(IAccessControl(address(mYieldToOneHookable)).hasRole(DEFAULT_ADMIN_ROLE, admin));
         assertTrue(IAccessControl(address(mYieldToOneHookable)).hasRole(FREEZE_MANAGER_ROLE, freezeManager));
@@ -116,32 +116,10 @@ contract MYieldToOneHookableUnitTests is BaseUnitTest {
             )
         );
     }
-    function test_initialize_zeroHookContract() external {
-        address implementation = address(new MYieldToOneHookableHarness(address(mToken), address(swapFacility)));
-
-        vm.expectRevert(IMYieldToOneHookable.ZeroHookContract.selector);
-        MYieldToOneHookableHarness(
-            UnsafeUpgrades.deployTransparentProxy(
-                implementation,
-                admin,
-                abi.encodeWithSelector(
-                    MYieldToOneHookable.initialize.selector,
-                    NAME,
-                    SYMBOL,
-                    address(yieldRecipient),
-                    admin,
-                    freezeManager,
-                    yieldRecipientManager,
-                    hookManager,
-                    address(0)
-                )
-            )
-        );
-    }
 
     /* ============ _wrap ============ */
 
-    function test_wrap_x() external {
+    function test_wrap() external {
         uint256 amount = 1_000e6;
         mToken.setBalanceOf(address(swapFacility), amount);
 
@@ -204,7 +182,7 @@ contract MYieldToOneHookableUnitTests is BaseUnitTest {
 
     /* ============ claimYield ============ */
 
-    function test_claimYield_x() external {
+    function test_claimYield() external {
         uint256 yield = 500e6;
 
         mToken.setBalanceOf(address(mYieldToOneHookable), 1_500e6);

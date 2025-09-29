@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.13;
+
+import { console } from "forge-std/console.sol";
+
+import {
+    Initializable
+} from "../../lib/common/lib/openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
+
+import {
+    IERC20
+} from "../../lib/common/lib/openzeppelin-contracts-upgradeable/lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+
+import { IMYieldToOne } from "../projects/yieldToOne/IMYieldToOne.sol";
+import { IHookLike } from "../projects/yieldToOneHookable/IMYieldToOneHookable.sol";
+import { IUniswapV3SwapAdapter } from "../swap/interfaces/IUniswapV3SwapAdapter.sol";
+import { IV3SwapRouter } from "../swap/interfaces/uniswap/IV3SwapRouter.sol";
+import { IHookableAssetAquisition } from "./IHookableAssetAquisition.sol";
+
+abstract contract HookableAssetAquisitionStorageLayout {
+    /// @custom:storage-location erc7201:M0.storage.HookableAssetAquisition
+    struct HookableAssetAquisitionStorageStruct {
+        address targetAsset;
+        address hookingAsset;
+        uint256 targetAssets;
+        uint256 hookingAssets;
+        address liquidityPool;
+        uint256 hodling; // seconds per unit held globally.
+        mapping(address => User) users;
+    }
+
+    struct User {
+        uint256 hodl; // seconds per unit held per user.
+        uint256 update; // last update timestamp.
+        uint256 assets;
+    }
+
+    // keccak256(abi.encode(uint256(keccak256("M0.storage.HookableAssetAquisition")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant _HOOKABLE_ASSET_AQUISITION_STORAGE_LOCATION =
+        0x2fd5767309dce890c526ace85d7fe164825199d7dcd99c33588befc51b32ce00;
+
+    function _getHookableAssetAquisitionStorageLocation()
+        internal
+        pure
+        returns (HookableAssetAquisitionStorageStruct storage $)
+    {
+        assembly {
+            $.slot := _HOOKABLE_ASSET_AQUISITION_STORAGE_LOCATION
+        }
+    }
+}
+
+contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquisitionStorageLayout, Initializable {
+    /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
+    address public immutable swapAdapter;
+
+    /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
+    address public immutable uniswapV3SwapRouter;
+
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+
+    /**
+     * @custom:oz-upgrades-unsafe-allow constructor
+     * @notice Constructs SwapFacility Implementation contract
+     * @dev    Sets immutable storage.
+     * @param  swapAdapter_      The address of the M swap adapter.
+     * @param  uniswapV3SwapRouter_   The address of the Uniswap swap router.
+     */
+    constructor(address swapAdapter_, address uniswapV3SwapRouter_) {
+        swapAdapter = swapAdapter_;
+        uniswapV3SwapRouter = uniswapV3SwapRouter_;
+    }
+
+    function initialize(address _hookingAsset, address _targetAsset) public virtual {
+        __HookableAssetAquisition_init(_hookingAsset, _targetAsset);
+    }
+
+    function __HookableAssetAquisition_init(address _hookingAsset, address _targetAsset) public {
+        if (_hookingAsset == address(0)) revert ZeroHookingAsset();
+        if (_targetAsset == address(0)) revert ZeroTargetAsset();
+
+        _setHookingAsset(_hookingAsset);
+        _setTargetAsset(_targetAsset);
+    }
+
+    modifier onlyHookingContract() {
+        if (msg.sender != getHookingAsset()) revert OnlyHookingContract();
+        _;
+    }
+
+    function claim() public {
+        _scrapeYield();
+
+        HookableAssetAquisitionStorageLayout.User storage user = _getUser(msg.sender);
+    }
+
+    function hook(address _from, address _to, uint256 _amount) public {
+        _scrapeYield();
+
+        if (_from != address(0)) {
+            HookableAssetAquisitionStorageLayout.User storage userFromStruct = _updateUser(_from);
+
+            userFromStruct.assets -= _amount;
+        }
+
+        if (_to != address(0)) {
+            HookableAssetAquisitionStorageLayout.User storage userToStruct = _updateUser(_to);
+
+            userToStruct.assets += _amount;
+        }
+    }
+
+    function getHookingAsset() public view returns (address) {
+        return _getHookableAssetAquisitionStorageLocation().hookingAsset;
+    }
+
+    function getTargetAsset() public view returns (address) {
+        return _getHookableAssetAquisitionStorageLocation().targetAsset;
+    }
+
+    function _updateUser(
+        address _user
+    ) internal returns (HookableAssetAquisitionStorageLayout.User storage userStruct) {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+
+        userStruct = $.users[_user];
+
+        if (userStruct.update != 0 && userStruct.update != 0) {
+            uint256 secondsSince = block.timestamp - userStruct.update;
+            uint256 secondsPerHodl = secondsSince * userStruct.assets;
+
+            userStruct.hodl += secondsPerHodl;
+        }
+
+        userStruct.update = block.timestamp;
+    }
+
+    function _getUser(address user) internal view returns (HookableAssetAquisitionStorageLayout.User storage) {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+
+        return $.users[user];
+    }
+
+    function _scrapeYield() internal {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+
+        uint256 yield = IMYieldToOne($.hookingAsset).claimYield();
+
+        $.targetAssets += yield;
+    }
+
+    function _spotSwap() internal {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+
+        IUniswapV3SwapAdapter(swapAdapter).swapOut($.hookingAsset, $.hookingAssets, USDC, 0, address(this), "");
+
+        uint256 intermediateUSDC = IERC20(USDC).balanceOf(address(this));
+
+        uint256 targetAmountOut = IV3SwapRouter(uniswapV3SwapRouter).exactInput(
+            IV3SwapRouter.ExactInputParams({
+                path: "",
+                recipient: address(this),
+                amountIn: intermediateUSDC,
+                amountOutMinimum: 0
+            })
+        );
+
+        $.targetAssets += targetAmountOut;
+
+        // TODO: transform any excess wM back into yieldable asset.
+    }
+
+    function _setHookingAsset(address _hookingAsset) internal {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+        $.hookingAsset = _hookingAsset;
+    }
+
+    function _setTargetAsset(address _targetAsset) internal {
+        HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+        $.targetAsset = _targetAsset;
+    }
+}

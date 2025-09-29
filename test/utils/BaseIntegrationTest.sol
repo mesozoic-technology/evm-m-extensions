@@ -19,9 +19,11 @@ import { MEarnerManager } from "../../src/projects/earnerManager/MEarnerManager.
 import { SwapFacility } from "../../src/swap/SwapFacility.sol";
 import { UniswapV3SwapAdapter } from "../../src/swap/UniswapV3SwapAdapter.sol";
 
+import { MYieldFeeHarness } from "../harness/MYieldFeeHarness.sol";
 import { MExtensionHarness } from "../harness/MExtensionHarness.sol";
 import { MYieldToOneHarness } from "../harness/MYieldToOneHarness.sol";
-import { MYieldFeeHarness } from "../harness/MYieldFeeHarness.sol";
+import { MYieldToOneHookableHarness } from "../harness/MYieldToOneHookableHarness.sol";
+import { HookableAssetAquisitionHarness } from "../harness/HookableAssetAquisitionHarness.sol";
 
 import { Helpers } from "./Helpers.sol";
 
@@ -62,6 +64,7 @@ contract BaseIntegrationTest is Helpers, Test {
     address public claimRecipientManager = makeAddr("claimRecipientManager");
     address public earnerManager = makeAddr("earnerManager");
     address public feeRecipient = makeAddr("feeRecipient");
+    address public hookManager = makeAddr("hookManager");
 
     address public alice;
     uint256 public aliceKey;
@@ -75,6 +78,8 @@ contract BaseIntegrationTest is Helpers, Test {
 
     MExtensionHarness public mExtension;
     MYieldToOneHarness public mYieldToOne;
+    MYieldToOneHookableHarness public mYieldToOneHookable;
+    HookableAssetAquisitionHarness public hookableAssetAquisition;
     MYieldFeeHarness public mYieldFee;
     MEarnerManager public mEarnerManager;
     SwapFacility public swapFacility;

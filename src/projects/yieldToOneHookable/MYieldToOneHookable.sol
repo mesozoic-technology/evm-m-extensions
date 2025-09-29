@@ -57,8 +57,7 @@ contract MYieldToOneHookable is IMYieldToOneHookable, MYieldToOneHookableStorage
         address admin,
         address freezeManager,
         address yieldRecipientManager,
-        address hookManager,
-        address hookContract
+        address hookManager
     ) public virtual initializer {
         __MYieldToOneHookable_init(
             name,
@@ -67,8 +66,7 @@ contract MYieldToOneHookable is IMYieldToOneHookable, MYieldToOneHookableStorage
             admin,
             freezeManager,
             yieldRecipientManager,
-            hookManager,
-            hookContract
+            hookManager
         );
     }
 
@@ -81,14 +79,11 @@ contract MYieldToOneHookable is IMYieldToOneHookable, MYieldToOneHookableStorage
         address admin,
         address freezeManager,
         address yieldRecipientManager,
-        address hookManager,
-        address hookContract
+        address hookManager
     ) internal {
         if (hookManager == address(0)) revert ZeroHookManager();
-        if (hookContract == address(0)) revert ZeroHookContract();
         __MYieldToOne_init(name, symbol, yieldRecipient, admin, freezeManager, yieldRecipientManager);
         _grantRole(HOOK_MANAGER_ROLE, hookManager);
-        _setHook(hookContract);
     }
 
     /* ============ Interactive Functions ============ */
