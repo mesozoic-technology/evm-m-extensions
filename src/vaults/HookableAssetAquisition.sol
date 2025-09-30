@@ -94,19 +94,41 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         HookableAssetAquisitionStorageLayout.User storage user = _getUser(msg.sender);
     }
 
-    function hook(address _from, address _to, uint256 _amount) public {
-        _scrapeYield();
-
-        if (_from != address(0)) {
+    function hook(address _from, address _to, uint256 _amount) public virtual onlyHookingContract {
+        // TODO: address intrcacies of transfers to and from smart contract where
+        // 1) they may be a smart contract wallet holding the asset
+        // 2) a liquidity pool or lending market into which various
+        //    users contribute assets thereby comingle rewards
+        // 3) operational smart contracts that are a part of the
+        //    m liquidity network
+        if (!_isContract(_from) && _from != address(0)) {
             HookableAssetAquisitionStorageLayout.User storage userFromStruct = _updateUser(_from);
-
             userFromStruct.assets -= _amount;
         }
 
-        if (_to != address(0)) {
+        if (!_isContract(_to) && _to != address(0)) {
             HookableAssetAquisitionStorageLayout.User storage userToStruct = _updateUser(_to);
-
             userToStruct.assets += _amount;
+        }
+
+        if (_to == address(this)) {
+            HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+            $.hookingAssets += _amount;
+        }
+
+        if (_from == address(this)) {
+            HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+            $.hookingAssets -= _amount;
+        }
+
+        // NOTE: only call scrape yield if update is not a burn
+        // due to unwrap mechanics in the swap facility which
+        // burn the mYieldToOne token before transferring out
+        // underlying M, which would falsely extra yield due to
+        // how mYieldToOne calcultes its yield given the delta
+        // of its own total supply versus its underlying M balance
+        if (_to != address(0)) {
+            _scrapeYield();
         }
     }
 
@@ -116,6 +138,23 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
 
     function getTargetAsset() public view returns (address) {
         return _getHookableAssetAquisitionStorageLocation().targetAsset;
+    }
+
+    function getHookingAssets() public view returns (uint256) {
+        return _getHookableAssetAquisitionStorageLocation().hookingAssets;
+    }
+
+    function getTargetAssets() public view returns (uint256) {
+        return _getHookableAssetAquisitionStorageLocation().targetAssets;
+    }
+
+    function getUser(address user) public view returns (uint256 assets, uint256 update, uint256 hodl) {
+        HookableAssetAquisitionStorageLayout.User storage $ = _getHookableAssetAquisitionStorageLocation().users[user];
+        return ($.assets, $.update, $.hodl);
+    }
+
+    function spotSwap() public {
+        _spotSwap();
     }
 
     function _updateUser(
@@ -146,19 +185,27 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
 
         uint256 yield = IMYieldToOne($.hookingAsset).claimYield();
 
-        $.targetAssets += yield;
+        uint256 leftoveryield = IMYieldToOne($.hookingAsset).yield();
+        console.log("yield from scrape yield", yield, "leftover yield", leftoveryield);
+        console.log("block.timestamp", block.timestamp);
+
+        $.hookingAssets += yield;
     }
 
     function _spotSwap() internal {
         HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
 
+        IERC20($.hookingAsset).approve(swapAdapter, $.hookingAssets);
+
         IUniswapV3SwapAdapter(swapAdapter).swapOut($.hookingAsset, $.hookingAssets, USDC, 0, address(this), "");
 
         uint256 intermediateUSDC = IERC20(USDC).balanceOf(address(this));
 
+        IERC20(USDC).approve(uniswapV3SwapRouter, intermediateUSDC);
+
         uint256 targetAmountOut = IV3SwapRouter(uniswapV3SwapRouter).exactInput(
             IV3SwapRouter.ExactInputParams({
-                path: "",
+                path: abi.encodePacked(USDC, uint24(3000), $.targetAsset),
                 recipient: address(this),
                 amountIn: intermediateUSDC,
                 amountOutMinimum: 0
@@ -178,5 +225,13 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
     function _setTargetAsset(address _targetAsset) internal {
         HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
         $.targetAsset = _targetAsset;
+    }
+
+    function _isContract(address _addr) internal returns (bool) {
+        uint256 size;
+        assembly {
+            size := extcodesize(_addr)
+        }
+        return size > 0;
     }
 }
