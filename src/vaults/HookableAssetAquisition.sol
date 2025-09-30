@@ -24,8 +24,10 @@ abstract contract HookableAssetAquisitionStorageLayout {
         address hookingAsset;
         uint256 targetAssets;
         uint256 hookingAssets;
+        uint256 yieldedAssets;
         address liquidityPool;
         uint256 hodling; // seconds per unit held globally.
+        uint256 update;
         mapping(address => User) users;
     }
 
@@ -91,7 +93,19 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
     function claim() public {
         _scrapeYield();
 
-        HookableAssetAquisitionStorageLayout.User storage user = _getUser(msg.sender);
+        HookableAssetAquisitionStorageStruct storage $ = _updateGlobal();
+
+        HookableAssetAquisitionStorageLayout.User storage user = _updateUser(msg.sender);
+
+        uint256 targetClaim = (user.hodl * $.targetAssets) / $.hodling;
+
+        $.hodling -= user.hodl;
+
+        user.hodl = 0;
+
+        $.targetAssets -= targetClaim;
+
+        IERC20($.targetAsset).transfer(msg.sender, targetClaim);
     }
 
     function hook(address _from, address _to, uint256 _amount) public virtual onlyHookingContract {
@@ -113,13 +127,27 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
 
         if (_to == address(this)) {
             HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
-            $.hookingAssets += _amount;
+            $.yieldedAssets += _amount;
         }
 
         if (_from == address(this)) {
             HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
-            $.hookingAssets -= _amount;
+            $.yieldedAssets -= _amount;
         }
+
+        // NOTE: minting, increment hooking assets
+        if (_from == address(0) && _to != address(this)) {
+            HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+            $.hookingAssets += _amount;
+        }
+
+        // NOTE: burning, decrement hooking assets
+        if (_to == address(0) && _from != address(this)) {
+            HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
+            $.hookingAssets += _amount;
+        }
+
+        _updateGlobal();
 
         // NOTE: only call scrape yield if update is not a burn
         // due to unwrap mechanics in the swap facility which
@@ -140,6 +168,10 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         return _getHookableAssetAquisitionStorageLocation().targetAsset;
     }
 
+    function getYieldedAssets() public view returns (uint256) {
+        return _getHookableAssetAquisitionStorageLocation().yieldedAssets;
+    }
+
     function getHookingAssets() public view returns (uint256) {
         return _getHookableAssetAquisitionStorageLocation().hookingAssets;
     }
@@ -153,6 +185,10 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         return ($.assets, $.update, $.hodl);
     }
 
+    function getHodling() public view returns (uint256 hodling) {
+        return _getHookableAssetAquisitionStorageLocation().hodling;
+    }
+
     function spotSwap() public {
         _spotSwap();
     }
@@ -164,7 +200,7 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
 
         userStruct = $.users[_user];
 
-        if (userStruct.update != 0 && userStruct.update != 0) {
+        if (userStruct.update != 0) {
             uint256 secondsSince = block.timestamp - userStruct.update;
             uint256 secondsPerHodl = secondsSince * userStruct.assets;
 
@@ -172,6 +208,19 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         }
 
         userStruct.update = block.timestamp;
+    }
+
+    function _updateGlobal() internal returns (HookableAssetAquisitionStorageStruct storage $) {
+        $ = _getHookableAssetAquisitionStorageLocation();
+
+        if ($.update != 0) {
+            uint256 secondsSince = block.timestamp - $.update;
+            uint256 secondsPerHodl = secondsSince * $.hookingAssets;
+
+            $.hodling += secondsPerHodl;
+        }
+
+        $.update = block.timestamp;
     }
 
     function _getUser(address user) internal view returns (HookableAssetAquisitionStorageLayout.User storage) {
@@ -184,20 +233,14 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
 
         uint256 yield = IMYieldToOne($.hookingAsset).claimYield();
-
-        uint256 leftoveryield = IMYieldToOne($.hookingAsset).yield();
-        console.log("yield from scrape yield", yield, "leftover yield", leftoveryield);
-        console.log("block.timestamp", block.timestamp);
-
-        $.hookingAssets += yield;
     }
 
     function _spotSwap() internal {
         HookableAssetAquisitionStorageStruct storage $ = _getHookableAssetAquisitionStorageLocation();
 
-        IERC20($.hookingAsset).approve(swapAdapter, $.hookingAssets);
+        IERC20($.hookingAsset).approve(swapAdapter, $.yieldedAssets);
 
-        IUniswapV3SwapAdapter(swapAdapter).swapOut($.hookingAsset, $.hookingAssets, USDC, 0, address(this), "");
+        IUniswapV3SwapAdapter(swapAdapter).swapOut($.hookingAsset, $.yieldedAssets, USDC, 0, address(this), "");
 
         uint256 intermediateUSDC = IERC20(USDC).balanceOf(address(this));
 
@@ -214,6 +257,8 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
 
         $.targetAssets += targetAmountOut;
 
+        $.yieldedAssets = 0;
+
         // TODO: transform any excess wM back into yieldable asset.
     }
 
@@ -227,7 +272,7 @@ contract HookableAssetAquisition is IHookableAssetAquisition, HookableAssetAquis
         $.targetAsset = _targetAsset;
     }
 
-    function _isContract(address _addr) internal returns (bool) {
+    function _isContract(address _addr) internal view returns (bool) {
         uint256 size;
         assembly {
             size := extcodesize(_addr)
