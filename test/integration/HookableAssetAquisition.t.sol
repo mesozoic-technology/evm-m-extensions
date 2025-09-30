@@ -123,6 +123,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         (originalUsdcWbtcPrice, , , ) = IQuoterV2(UNISWAP_V3_QUOTER).quoteExactInputSingle(params);
 
         _giveM(alice, 100_000e6);
+        _giveM(bob, 100_000e6);
 
         mYieldToOneHookable = MYieldToOneHookableHarness(
             Upgrades.deployTransparentProxy(
@@ -210,7 +211,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
         totalSupply = mYieldToOneHookable.totalSupply();
 
-        uint256 hookingBalance = hookableAssetAquisition.getHookingAssets();
+        uint256 yieldedBalance = hookableAssetAquisition.getYieldedAssets();
         uint256 targetBalance = hookableAssetAquisition.getTargetAssets();
         uint256 wbtcBalance = IERC20(WBTC).balanceOf(address(hookableAssetAquisition));
 
@@ -219,8 +220,124 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
             0,
             "HookableAssetAquisition should have zero mYieldToOneHookable balance"
         );
-        assertEq(hookingBalance, 0, "hooking balance should be entirely swapped into target");
+        assertEq(yieldedBalance, 0, "yielded balance should be entirely swapped into target");
         assertTrue(0 < targetBalance, "target balance should have been received by the aquisition contract");
         assertTrue(0 < wbtcBalance, "wbtc should be acquired by HookableAssetAquisition");
+    }
+
+    function test_claim_x() public {
+        mYieldToOneHookable.enableEarning();
+
+        assertEq(mToken.balanceOf(alice), 100_000e6);
+
+        vm.prank(alice);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAquisitionHarness.HookCalled(address(0), alice, 100_000e6);
+
+        vm.prank(alice);
+        swapFacility.swapInM(address(mYieldToOneHookable), 100_000e6, alice);
+
+        assertEq(mYieldToOneHookable.balanceOf(alice), 100_000e6);
+
+        vm.warp(vm.getBlockTimestamp() + 31449600);
+
+        mYieldToOneHookable.claimYield();
+
+        hookableAssetAquisition.spotSwap();
+
+        uint256 targetAssets = hookableAssetAquisition.getTargetAssets();
+
+        vm.prank(alice);
+        hookableAssetAquisition.claim();
+
+        assertEq(IERC20(WBTC).balanceOf(alice), targetAssets, "alice should hold all of the target assets");
+        assertEq(
+            hookableAssetAquisition.getTargetAssets(),
+            0,
+            "HookableAssetAquisition should not have any remaining target assets"
+        );
+        assertEq(hookableAssetAquisition.getHodling(), 0, "HookableAssetAquisition should have 0 hodling");
+
+        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAquisition.getUser(alice);
+
+        assertEq(aliceHodl, 0, "alice should have 0 hodl");
+        assertEq(aliceUpdate, vm.getBlockTimestamp(), "alice should be updated to the current timestamp");
+        assertEq(aliceAssets, 100_000e6, "alice should have original 100_000e6 balance");
+    }
+
+    function test_claimTwoUsers() public {
+        mYieldToOneHookable.enableEarning();
+
+        assertEq(mToken.balanceOf(alice), 100_000e6);
+
+        vm.prank(alice);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAquisitionHarness.HookCalled(address(0), alice, 50_000e6);
+
+        vm.prank(alice);
+        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, alice);
+
+        vm.prank(bob);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAquisitionHarness.HookCalled(address(0), bob, 50_000e6);
+
+        vm.prank(bob);
+        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, bob);
+
+        assertEq(mYieldToOneHookable.balanceOf(bob), 50_000e6);
+
+        assertEq(mYieldToOneHookable.totalSupply(), 100_000e6);
+
+        vm.warp(vm.getBlockTimestamp() + 31449600);
+
+        mYieldToOneHookable.claimYield();
+
+        hookableAssetAquisition.spotSwap();
+
+        uint256 targetAssets = hookableAssetAquisition.getTargetAssets();
+
+        vm.prank(alice);
+        hookableAssetAquisition.claim();
+
+        vm.prank(bob);
+        hookableAssetAquisition.claim();
+
+        assertApproxEqAbs(
+            IERC20(WBTC).balanceOf(alice),
+            targetAssets / 2,
+            1,
+            "alice should hold half of the target assets"
+        );
+        assertApproxEqAbs(
+            IERC20(WBTC).balanceOf(bob),
+            targetAssets / 2,
+            1,
+            "bob should hold half of the target assets"
+        );
+
+        assertEq(
+            hookableAssetAquisition.getTargetAssets(),
+            0,
+            "HookableAssetAquisition should not have any remaining target assets"
+        );
+        assertEq(hookableAssetAquisition.getHodling(), 0, "HookableAssetAquisition should have 0 hodling");
+
+        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAquisition.getUser(alice);
+
+        assertEq(aliceHodl, 0, "alice should have 0 hodl");
+        assertEq(aliceUpdate, vm.getBlockTimestamp(), "alice should be updated to the current timestamp");
+        assertEq(aliceAssets, 50_000e6, "alice should have original 50_000e6 balance");
+
+        (uint256 bobAssets, uint256 bobUpdate, uint256 bobHodl) = hookableAssetAquisition.getUser(bob);
+
+        assertEq(bobHodl, 0, "bob should have 0 hodl");
+        assertEq(bobUpdate, vm.getBlockTimestamp(), "bob should be updated to the current timestamp");
+        assertEq(bobAssets, 50_000e6, "bob should have original 50_000e6 balance");
     }
 }
