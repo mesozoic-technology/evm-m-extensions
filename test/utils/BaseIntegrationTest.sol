@@ -23,7 +23,7 @@ import { MYieldFeeHarness } from "../harness/MYieldFeeHarness.sol";
 import { MExtensionHarness } from "../harness/MExtensionHarness.sol";
 import { MYieldToOneHarness } from "../harness/MYieldToOneHarness.sol";
 import { MYieldToOneHookableHarness } from "../harness/MYieldToOneHookableHarness.sol";
-import { HookableAssetAquisitionHarness } from "../harness/HookableAssetAquisitionHarness.sol";
+import { HookableAssetAcquisitionHarness } from "../harness/HookableAssetAcquisitionHarness.sol";
 
 import { Helpers } from "./Helpers.sol";
 
@@ -79,7 +79,7 @@ contract BaseIntegrationTest is Helpers, Test {
     MExtensionHarness public mExtension;
     MYieldToOneHarness public mYieldToOne;
     MYieldToOneHookableHarness public mYieldToOneHookable;
-    HookableAssetAquisitionHarness public hookableAssetAquisition;
+    HookableAssetAcquisitionHarness public hookableAssetAcquisition;
     MYieldFeeHarness public mYieldFee;
     MEarnerManager public mEarnerManager;
     SwapFacility public swapFacility;

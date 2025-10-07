@@ -5,10 +5,10 @@ pragma solidity 0.8.26;
 import { IHookLike } from "../projects/yieldToOneHookable/IMYieldToOneHookable.sol";
 
 /**
- * @title HookableAssetAquisition interface.
+ * @title HookableAssetAcquisition interface.
  * @author Mesozoic
  */
-interface IHookableAssetAquisition is IHookLike {
+interface IHookableAssetAcquisition is IHookLike {
     error ZeroHookingAsset();
     error ZeroTargetAsset();
     error OnlyHookingContract();

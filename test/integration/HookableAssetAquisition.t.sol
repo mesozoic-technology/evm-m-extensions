@@ -17,9 +17,13 @@ import { IFreezable } from "../../src/components/IFreezable.sol";
 import { MYieldToOne } from "../../src/projects/yieldToOne/MYieldToOne.sol";
 
 import { MYieldToOneHookableHarness } from "../harness/MYieldToOneHookableHarness.sol";
-import { HookableAssetAquisitionHarness } from "../harness/HookableAssetAquisitionHarness.sol";
+import { HookableAssetAcquisitionHarness } from "../harness/HookableAssetAcquisitionHarness.sol";
 
 import { BaseIntegrationTest } from "../utils/BaseIntegrationTest.sol";
+
+import { GPv2Order } from "../../src/libs/CoWTWAP/GPv2Order.sol";
+import { CoWTWAPLib } from "../../src/libs/CoWTWAP/CoWTWAP.sol";
+import { IConditionalOrder } from "../../src/libs/CoWTWAP/IConditionalOrder.sol";
 
 interface IUniswapV3Pool {
     function slot0()
@@ -69,7 +73,7 @@ interface IQuoterV2 {
         returns (uint256 amountIn, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate);
 }
 
-contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
+contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
     using stdStorage for StdStorage;
 
     address constant UNISWAP_V3_QUOTER = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
@@ -88,7 +92,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
     address constant WBTC_WHALE = 0xed805ac246F441Ea0D057B81d910EF1e39EB5995;
 
-    Options public hookableAssetAquisitionDeployOptions;
+    Options public hookableAssetAcquisitionDeployOptions;
 
     uint256 startTime = vm.getBlockTimestamp();
 
@@ -103,6 +107,8 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(whaleBalance));
 
         stdstore.target(WBTC).sig("balanceOf(address)").with_key(WBTC_WHALE).checked_write(uint256(0));
+
+        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
 
         super.setUp();
 
@@ -143,21 +149,21 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
             )
         );
 
-        hookableAssetAquisitionDeployOptions.constructorData = abi.encode(
+        hookableAssetAcquisitionDeployOptions.constructorData = abi.encode(
             address(swapAdapter),
             address(UNISWAP_V3_ROUTER)
         );
 
-        hookableAssetAquisition = HookableAssetAquisitionHarness(
+        hookableAssetAcquisition = HookableAssetAcquisitionHarness(
             Upgrades.deployTransparentProxy(
-                "HookableAssetAquisitionHarness.sol:HookableAssetAquisitionHarness",
+                "HookableAssetAcquisitionHarness.sol:HookableAssetAcquisitionHarness",
                 admin,
                 abi.encodeWithSelector(
-                    HookableAssetAquisitionHarness.initialize.selector,
+                    HookableAssetAcquisitionHarness.initialize.selector,
                     address(mYieldToOneHookable),
                     WBTC
                 ),
-                hookableAssetAquisitionDeployOptions
+                hookableAssetAcquisitionDeployOptions
             )
         );
 
@@ -165,10 +171,10 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
         vm.prank(hookManager);
 
-        mYieldToOneHookable.setHook(address(hookableAssetAquisition));
+        mYieldToOneHookable.setHook(address(hookableAssetAcquisition));
 
         vm.prank(yieldRecipientManager);
-        mYieldToOneHookable.setYieldRecipient(address(hookableAssetAquisition));
+        mYieldToOneHookable.setYieldRecipient(address(hookableAssetAcquisition));
 
         vm.prank(admin);
         swapFacility.grantRole(M_SWAPPER_ROLE, USER);
@@ -183,14 +189,14 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
-        emit HookableAssetAquisitionHarness.HookCalled(address(0), alice, 100_000e6);
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), alice, 100_000e6);
 
         vm.prank(alice);
         swapFacility.swapInM(address(mYieldToOneHookable), 100_000e6, alice);
 
         assertEq(mYieldToOneHookable.balanceOf(alice), 100_000e6);
 
-        (uint256 userAssets, uint256 userUpdate, uint256 userHodl) = hookableAssetAquisition.getUser(alice);
+        (uint256 userAssets, uint256 userUpdate, uint256 userHodl) = hookableAssetAcquisition.getUser(alice);
 
         uint256 yield = mYieldToOneHookable.yield();
         uint256 totalSupply = mYieldToOneHookable.totalSupply();
@@ -203,26 +209,26 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
         mYieldToOneHookable.claimYield();
 
-        uint256 hookingAssets = hookableAssetAquisition.getHookingAssets();
+        uint256 hookingAssets = hookableAssetAcquisition.getHookingAssets();
 
-        hookableAssetAquisition.spotSwap();
+        hookableAssetAcquisition.spotSwap();
 
-        uint256 balanceOfHookableAssetAquisition = mYieldToOneHookable.balanceOf(address(hookableAssetAquisition));
+        uint256 balanceOfHookableAssetAcquisition = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
 
         totalSupply = mYieldToOneHookable.totalSupply();
 
-        uint256 yieldedBalance = hookableAssetAquisition.getYieldedAssets();
-        uint256 targetBalance = hookableAssetAquisition.getTargetAssets();
-        uint256 wbtcBalance = IERC20(WBTC).balanceOf(address(hookableAssetAquisition));
+        uint256 yieldedBalance = hookableAssetAcquisition.getYieldedAssets();
+        uint256 targetBalance = hookableAssetAcquisition.getTargetAssets();
+        uint256 wbtcBalance = IERC20(WBTC).balanceOf(address(hookableAssetAcquisition));
 
         assertEq(
-            balanceOfHookableAssetAquisition,
+            balanceOfHookableAssetAcquisition,
             0,
-            "HookableAssetAquisition should have zero mYieldToOneHookable balance"
+            "HookableAssetAcquisition should have zero mYieldToOneHookable balance"
         );
         assertEq(yieldedBalance, 0, "yielded balance should be entirely swapped into target");
-        assertTrue(0 < targetBalance, "target balance should have been received by the aquisition contract");
-        assertTrue(0 < wbtcBalance, "wbtc should be acquired by HookableAssetAquisition");
+        assertTrue(0 < targetBalance, "target balance should have been received by the Acquisition contract");
+        assertTrue(0 < wbtcBalance, "wbtc should be acquired by HookableAssetAcquisition");
     }
 
     function test_claim_x() public {
@@ -234,7 +240,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
-        emit HookableAssetAquisitionHarness.HookCalled(address(0), alice, 100_000e6);
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), alice, 100_000e6);
 
         vm.prank(alice);
         swapFacility.swapInM(address(mYieldToOneHookable), 100_000e6, alice);
@@ -245,22 +251,22 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
         mYieldToOneHookable.claimYield();
 
-        hookableAssetAquisition.spotSwap();
+        hookableAssetAcquisition.spotSwap();
 
-        uint256 targetAssets = hookableAssetAquisition.getTargetAssets();
+        uint256 targetAssets = hookableAssetAcquisition.getTargetAssets();
 
         vm.prank(alice);
-        hookableAssetAquisition.claim();
+        hookableAssetAcquisition.claim();
 
         assertEq(IERC20(WBTC).balanceOf(alice), targetAssets, "alice should hold all of the target assets");
         assertEq(
-            hookableAssetAquisition.getTargetAssets(),
+            hookableAssetAcquisition.getTargetAssets(),
             0,
-            "HookableAssetAquisition should not have any remaining target assets"
+            "HookableAssetAcquisition should not have any remaining target assets"
         );
-        assertEq(hookableAssetAquisition.getHodling(), 0, "HookableAssetAquisition should have 0 hodling");
+        assertEq(hookableAssetAcquisition.getHodling(), 0, "HookableAssetAcquisition should have 0 hodling");
 
-        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAquisition.getUser(alice);
+        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAcquisition.getUser(alice);
 
         assertEq(aliceHodl, 0, "alice should have 0 hodl");
         assertEq(aliceUpdate, vm.getBlockTimestamp(), "alice should be updated to the current timestamp");
@@ -276,7 +282,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
-        emit HookableAssetAquisitionHarness.HookCalled(address(0), alice, 50_000e6);
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), alice, 50_000e6);
 
         vm.prank(alice);
         swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, alice);
@@ -285,7 +291,7 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
-        emit HookableAssetAquisitionHarness.HookCalled(address(0), bob, 50_000e6);
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), bob, 50_000e6);
 
         vm.prank(bob);
         swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, bob);
@@ -298,15 +304,15 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
 
         mYieldToOneHookable.claimYield();
 
-        hookableAssetAquisition.spotSwap();
+        hookableAssetAcquisition.spotSwap();
 
-        uint256 targetAssets = hookableAssetAquisition.getTargetAssets();
+        uint256 targetAssets = hookableAssetAcquisition.getTargetAssets();
 
         vm.prank(alice);
-        hookableAssetAquisition.claim();
+        hookableAssetAcquisition.claim();
 
         vm.prank(bob);
-        hookableAssetAquisition.claim();
+        hookableAssetAcquisition.claim();
 
         assertApproxEqAbs(
             IERC20(WBTC).balanceOf(alice),
@@ -322,22 +328,233 @@ contract HookableAssetAquisitionIntegrationTest is BaseIntegrationTest {
         );
 
         assertEq(
-            hookableAssetAquisition.getTargetAssets(),
+            hookableAssetAcquisition.getTargetAssets(),
             0,
-            "HookableAssetAquisition should not have any remaining target assets"
+            "HookableAssetAcquisition should not have any remaining target assets"
         );
-        assertEq(hookableAssetAquisition.getHodling(), 0, "HookableAssetAquisition should have 0 hodling");
+        assertEq(hookableAssetAcquisition.getHodling(), 0, "HookableAssetAcquisition should have 0 hodling");
 
-        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAquisition.getUser(alice);
+        (uint256 aliceAssets, uint256 aliceUpdate, uint256 aliceHodl) = hookableAssetAcquisition.getUser(alice);
 
         assertEq(aliceHodl, 0, "alice should have 0 hodl");
         assertEq(aliceUpdate, vm.getBlockTimestamp(), "alice should be updated to the current timestamp");
         assertEq(aliceAssets, 50_000e6, "alice should have original 50_000e6 balance");
 
-        (uint256 bobAssets, uint256 bobUpdate, uint256 bobHodl) = hookableAssetAquisition.getUser(bob);
+        (uint256 bobAssets, uint256 bobUpdate, uint256 bobHodl) = hookableAssetAcquisition.getUser(bob);
 
         assertEq(bobHodl, 0, "bob should have 0 hodl");
         assertEq(bobUpdate, vm.getBlockTimestamp(), "bob should be updated to the current timestamp");
         assertEq(bobAssets, 50_000e6, "bob should have original 50_000e6 balance");
+    }
+
+    function test_completeTWAPExecutionWithActualTokens() public {
+        stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
+
+        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
+
+        mYieldToOneHookable.enableEarning();
+
+        assertEq(mToken.balanceOf(alice), 100_000e6);
+
+        vm.prank(alice);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), alice, 50_000e6);
+
+        vm.prank(alice);
+        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, alice);
+
+        vm.prank(bob);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), bob, 50_000e6);
+
+        vm.prank(bob);
+        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, bob);
+
+        assertEq(mYieldToOneHookable.balanceOf(bob), 50_000e6);
+
+        assertEq(mYieldToOneHookable.totalSupply(), 100_000e6);
+
+        vm.warp(vm.getBlockTimestamp() + 31449600);
+
+        mYieldToOneHookable.claimYield();
+
+        // ============ SETUP PHASE ============
+        console.log("=== Starting TWAP Test with Actual Tokens ===");
+
+        uint256 yieldBalance = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
+        require(yieldBalance > 0, "No yield accumulated");
+
+        // Create a TWAP order based on actual yield
+        uint256 numberOfParts = 10;
+        uint256 partDuration = 600; // ten minutes
+
+        hookableAssetAcquisition.cowSwapTWAP();
+
+        bytes32 twapId = hookableAssetAcquisition.getActiveTWAPId();
+        require(twapId != bytes32(0), "TWAP not created");
+
+        // Verify TWAP was created with actual amounts
+        (uint256 totalAmount, uint256 numParts, uint256 currentPart, , ) = hookableAssetAcquisition
+            .getActiveTWAPStatus();
+
+        assertEq(numParts, 10, "Should have 10 parts");
+        assertEq(currentPart, 0, "Should start at part 0");
+
+        // Track USDC balance (some might already exist from other operations)
+        uint256 initialUsdcBalance = IERC20(USDC).balanceOf(address(hookableAssetAcquisition));
+
+        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
+
+        // ============ EXECUTION PHASE ============
+
+        for (uint256 i = 0; i < numberOfParts; i++) {
+            console.log("\n--- Executing Part", i + 1, "---");
+
+            {
+                (, , uint256 newCurrentPart, uint256 amountSold, ) = hookableAssetAcquisition.getActiveTWAPStatus();
+                console.log("start cp", newCurrentPart);
+                console.log("start as", amountSold);
+            }
+
+            // Fast forward time to make next part ready
+            vm.warp(block.timestamp + partDuration);
+
+            // 1. Get the order (simulating what watchtower does)
+            GPv2Order.Data memory order = hookableAssetAcquisition.getTradeableOrder(
+                address(hookableAssetAcquisition),
+                address(this),
+                abi.encode(twapId),
+                ""
+            );
+
+            console.log("Order generated for", order.sellAmount / 1e6, "tokens");
+
+            // Verify order parameters
+            assertEq(address(order.sellToken), USDC, "Wrong sell token");
+            assertEq(address(order.buyToken), WBTC, "Wrong buy token");
+            assertEq(order.receiver, address(hookableAssetAcquisition), "Wrong receiver");
+
+            // 2. Verify signature (what settlement contract does)
+            bytes32 orderHash = GPv2Order.hash(order, CoWTWAPLib.DOMAIN_SEPARATOR);
+            bytes4 magic = hookableAssetAcquisition.isValidSignature(orderHash, abi.encode(twapId));
+            assertEq(magic, bytes4(0x1626ba7e), "Invalid signature");
+
+            // 3. Mock the settlement execution
+            uint256 balanceBefore = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
+            uint256 usdcReceived = _mockSettlementWithActualTokens(order, i);
+            uint256 balanceAfter = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
+
+            // 4. Record the execution
+            hookableAssetAcquisition.recordTWAPExecution(twapId, order.sellAmount, usdcReceived);
+
+            // Verify state updated
+            (, , uint256 newCurrentPart, uint256 amountSold, ) = hookableAssetAcquisition.getActiveTWAPStatus();
+
+            console.log("current part", newCurrentPart);
+            console.log("amount sold", amountSold);
+
+            assertEq(newCurrentPart, i + 1, "Current part should increment");
+        }
+
+        // ============ COMPLETION PHASE ============
+        console.log("\n=== TWAP Execution Complete ===");
+
+        // Verify TWAP is complete
+        (, , uint256 finalPart, uint256 totalSold, uint256 totalBought) = hookableAssetAcquisition
+            .getActiveTWAPStatus();
+
+        console.log("final part", finalPart);
+        console.log("total sold", totalSold);
+        console.log("total bought", totalBought);
+
+        assertEq(finalPart, numberOfParts, "Should have executed all parts");
+
+        console.log("Final results:");
+        console.log("  Total USDC sold:", totalSold);
+        console.log("  Total WBTC received:", totalBought);
+
+        uint256 wbtcBalance = IERC20(WBTC).balanceOf(address(hookableAssetAcquisition));
+        assertEq(wbtcBalance, totalBought, "Should have acquired WBTC");
+
+        // // ============ USER CLAIMS ============
+        // console.log("\n=== User Claims ===");
+
+        // // Alice can now claim her share of WBTC
+        // uint256 aliceWbtcBefore = IERC20(WBTC).balanceOf(alice);
+
+        // vm.prank(alice);
+        // acquisition.claim();
+
+        // uint256 aliceWbtcAfter = IERC20(WBTC).balanceOf(alice);
+        // uint256 aliceReceived = aliceWbtcAfter - aliceWbtcBefore;
+
+        // console.log("Alice claimed:", aliceReceived, "sats of WBTC");
+        // assertGt(aliceReceived, 0, "Alice should receive WBTC");
+
+        // // Bob claims his share
+        // uint256 bobWbtcBefore = IERC20(WBTC).balanceOf(bob);
+
+        // vm.prank(bob);
+        // acquisition.claim();
+
+        // uint256 bobWbtcAfter = IERC20(WBTC).balanceOf(bob);
+        // uint256 bobReceived = bobWbtcAfter - bobWbtcBefore;
+
+        // console.log("Bob claimed:", bobReceived, "sats of WBTC");
+        // assertGt(bobReceived, 0, "Bob should receive WBTC");
+
+        // // Verify proportional distribution (they had equal deposits)
+        // assertApproxEqRel(aliceReceived, bobReceived, 0.01e18, "Should receive approximately equal amounts");
+    }
+
+    function _mockSettlementWithActualTokens(
+        GPv2Order.Data memory order,
+        uint256 iteration
+    ) internal returns (uint256 wbtcReceived) {
+        // Verify approval is in place
+        uint256 allowance = order.sellToken.allowance(address(hookableAssetAcquisition), CoWTWAPLib.COW_VAULT_RELAYER);
+        require(allowance >= order.sellAmount, "Insufficient approval");
+
+        console.log("hmmmm");
+
+        // 1. Mock settlement pulling tokens from your contract
+        vm.startPrank(CoWTWAPLib.COW_VAULT_RELAYER);
+        order.sellToken.transferFrom(address(hookableAssetAcquisition), CoWTWAPLib.COW_VAULT_RELAYER, order.sellAmount);
+
+        // 2. Calculate swap output using actual Uniswap quotes
+        // In reality, CoW would route through multiple DEXs
+        uint256 wbtcReceived = _getActualSwapQuote(order.sellAmount, iteration);
+
+        vm.stopPrank();
+        console.log("xmmmm", wbtcReceived);
+        console.log("zmmmm", WBTC);
+        console.log("vr", IERC20(WBTC).balanceOf(alice));
+        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
+        vm.startPrank(alice);
+        IERC20(WBTC).transfer(CoWTWAPLib.COW_VAULT_RELAYER, wbtcReceived);
+        vm.stopPrank();
+
+        console.log("zmmmm", WBTC);
+        console.log("vr", IERC20(WBTC).balanceOf(CoWTWAPLib.COW_VAULT_RELAYER));
+        // 4. Settlement sends USDC to acquisition contract
+        vm.startPrank(CoWTWAPLib.COW_VAULT_RELAYER);
+        IERC20(WBTC).transfer(order.receiver, wbtcReceived);
+        vm.stopPrank();
+
+        return wbtcReceived;
+    }
+    /**
+     * @notice Get actual swap quote from Uniswap
+     * @dev This queries actual liquidity but doesn't execute the swap
+     */
+    function _getActualSwapQuote(uint256 sellAmount, uint256 iteration) internal view returns (uint256) {
+        // price of one bitcoin in usdc
+        uint256 wbtcPrice = (100 + iteration) * 1e6;
+        // amount of wbtc for sell amount adjusted to 8 decimals
+        return (sellAmount * wbtcPrice) / 1e12;
     }
 }
