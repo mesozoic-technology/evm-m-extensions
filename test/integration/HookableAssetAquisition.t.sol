@@ -39,6 +39,8 @@ import { LiquidityAmounts } from "@uniswap/v4-core/test/utils/LiquidityAmounts.s
 import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import { IPermit2 } from "@uniswap/v4-periphery/lib/permit2/src/interfaces/IPermit2.sol";
 import { IV4Router } from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
+import { IUniversalRouter } from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
+import { Commands } from "@uniswap/universal-router/contracts/libraries/Commands.sol";
 
 interface IUniswapV3Pool {
     function slot0()
@@ -764,54 +766,75 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             );
         }
         {
-            // Define swap parameters
-            bool zeroForOne = Currency.unwrap(key.currency0) == USDC; // USDC -> WBTC
-            uint128 amountIn = 1e6; // 1 USDC
-            uint128 minAmountOut = 0; // Set appropriate slippage
-
-            // Approve UniversalRouter to spend tokens via Permit2
+            vm.prank(alice);
+            IERC20(USDC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
             vm.prank(alice);
             IPermit2(UNISWAP_V4_PERMIT2).approve(
                 USDC,
-                UNISWAP_V4_UNIVERSAL_ROUTER,
+                address(UNISWAP_V4_UNIVERSAL_ROUTER),
+                type(uint160).max,
+                type(uint48).max
+            );
+            vm.prank(alice);
+            IERC20(WBTC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
+            vm.prank(alice);
+            IPermit2(UNISWAP_V4_PERMIT2).approve(
+                WBTC,
+                address(UNISWAP_V4_UNIVERSAL_ROUTER),
                 type(uint160).max,
                 type(uint48).max
             );
 
-            // Build V4 action plan using the Actions enum
-            bytes memory v4Actions = abi.encodePacked(
-                uint8(0x06) // Actions.SWAP_EXACT_IN_SINGLE
+            bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+
+            // Encode V4Router actions
+            bytes memory actions = abi.encodePacked(
+                uint8(Actions.SWAP_EXACT_IN_SINGLE),
+                uint8(Actions.SETTLE_ALL),
+                uint8(Actions.TAKE_ALL)
             );
 
-            bytes[] memory v4Params = new bytes[](1);
+            bytes[] memory params = new bytes[](3);
 
-            // Encode SWAP_EXACT_IN_SINGLE parameters
-            v4Params[0] = abi.encode(
-                key, // PoolKey
-                zeroForOne, // direction
-                amountIn, // amountIn
-                minAmountOut, // amountOutMinimum
-                bytes("") // hookData (empty unless your hook needs it)
+            uint128 amountIn = 1e6;
+            uint128 minAmountOut = 0;
+
+            // First parameter: swap configuration
+            params[0] = abi.encode(
+                IV4Router.ExactInputSingleParams({
+                    poolKey: key,
+                    zeroForOne: true, // true if we're swapping token0 for token1
+                    amountIn: amountIn, // amount of tokens we're swapping
+                    amountOutMinimum: minAmountOut, // minimum amount we expect to receive
+                    hookData: bytes("") // no hook data needed
+                })
             );
 
-            // Encode the V4 planner output
-            bytes memory v4PlannerEncoded = abi.encode(v4Actions, v4Params);
+            // Second parameter: specify input tokens for the swap
+            // encode SETTLE_ALL parameters
+            params[1] = abi.encode(key.currency0, amountIn);
 
-            // Build UniversalRouter command
-            bytes memory commands = abi.encodePacked(
-                bytes1(uint8(0x10)) // CommandType.V4_SWAP
-            );
+            // Third parameter: specify output tokens from the swap
+            params[2] = abi.encode(key.currency1, minAmountOut);
 
             bytes[] memory inputs = new bytes[](1);
-            inputs[0] = v4PlannerEncoded;
 
-            // // Execute the swap
-            // vm.prank(alice);
-            // IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(
-            //     commands,
-            //     inputs,
-            //     block.timestamp + 60
-            // );
+            // Combine actions and params into inputs
+            inputs[0] = abi.encode(actions, params);
+
+            uint256 wbtcBefore = IERC20(WBTC).balanceOf(alice);
+            uint256 usdcBefore = IERC20(USDC).balanceOf(alice);
+
+            // Execute the swap
+            uint256 deadline = block.timestamp + 20;
+            vm.prank(alice);
+            IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
+
+            uint256 wbtcAfter = IERC20(WBTC).balanceOf(alice);
+            uint256 usdcAfter = IERC20(USDC).balanceOf(alice);
+
+            console.log("before", wbtcBefore, usdcBefore);
+            console.log("after", wbtcAfter, usdcAfter);
         }
     }
 }
