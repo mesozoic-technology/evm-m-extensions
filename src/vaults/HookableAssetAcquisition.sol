@@ -44,6 +44,7 @@ abstract contract HookableAssetAcquisitionStorageLayout {
         uint256 hodl; // seconds per unit held per user.
         uint256 update; // last update timestamp.
         uint256 assets;
+        bool activated;
     }
 
     // keccak256(abi.encode(uint256(keccak256("M0.storage.HookableAssetAcquisition")) - 1)) & ~bytes32(uint256(0xff))
@@ -111,9 +112,11 @@ contract HookableAssetAcquisition is
     function claim() public {
         _scrapeYield();
 
-        HookableAssetAcquisitionStorageStruct storage $ = _updateGlobal();
+        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
 
-        HookableAssetAcquisitionStorageLayout.User storage user = _updateUser(msg.sender);
+        HookableAssetAcquisitionStorageLayout.User storage user = $.users[msg.sender];
+
+        _updateUser(user);
 
         uint256 targetClaim = (user.hodl * $.targetAssets) / $.hodling;
 
@@ -127,31 +130,27 @@ contract HookableAssetAcquisition is
     }
 
     function hook(address _from, address _to, uint256 _amount) public virtual onlyHookingContract {
-        // TODO: address intrcacies of transfers to and from smart contract where
-        // 1) they may be a smart contract wallet holding the asset
-        // 2) a liquidity pool or lending market into which various
-        //    users contribute assets thereby comingle rewards
-        // 3) operational smart contracts that are a part of the
-        //    m liquidity network
-        if (!_isContract(_from) && _from != address(0)) {
-            HookableAssetAcquisitionStorageLayout.User storage userFromStruct = _updateUser(_from);
+        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
+
+        HookableAssetAcquisitionStorageLayout.User storage userFromStruct = $.users[_from];
+
+        if (userFromStruct.activated) {
             userFromStruct.assets -= _amount;
+            _updateUser(userFromStruct);
         }
 
-        if (!_isContract(_to) && _to != address(0)) {
-            HookableAssetAcquisitionStorageLayout.User storage userToStruct = _updateUser(_to);
+        HookableAssetAcquisitionStorageLayout.User storage userToStruct = $.users[_to];
+
+        if (userToStruct.activated) {
             userToStruct.assets += _amount;
+            _updateUser(userToStruct);
         }
 
-        if (_to == address(this)) {
-            HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-            $.yieldedAssets += _amount;
-        }
+        // NOTE: yield comes in
+        if (_to == address(this)) $.yieldedAssets += _amount;
 
-        if (_from == address(this)) {
-            HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-            $.yieldedAssets -= _amount;
-        }
+        // NOTE: yield goes out
+        if (_from == address(this)) $.yieldedAssets -= _amount;
 
         // NOTE: minting, increment hooking assets
         if (_from == address(0) && _to != address(this)) {
@@ -176,6 +175,10 @@ contract HookableAssetAcquisition is
         if (_to != address(0)) {
             _scrapeYield();
         }
+    }
+
+    function activateUser() public {
+        _activateUser(msg.sender);
     }
 
     function getHookingAsset() public view returns (address) {
@@ -429,13 +432,24 @@ contract HookableAssetAcquisition is
         // Function will not revert, indicating verification passed
     }
 
-    function _updateUser(
-        address _user
-    ) internal returns (HookableAssetAcquisitionStorageLayout.User storage userStruct) {
+    function _activateUser(address _user) internal {
         HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
 
-        userStruct = $.users[_user];
+        HookableAssetAcquisitionStorageLayout.User storage userStruct = $.users[_user];
 
+        if (userStruct.activated) revert("Already Activated");
+
+        userStruct.activated = true;
+
+        uint256 _balance = IERC20($.hookingAsset).balanceOf(_user);
+
+        if (0 < _balance) {
+            _updateUser(userStruct);
+            userStruct.assets += _balance;
+        }
+    }
+
+    function _updateUser(HookableAssetAcquisitionStorageLayout.User storage userStruct) internal {
         if (userStruct.update != 0) {
             uint256 secondsSince = block.timestamp - userStruct.update;
             uint256 secondsPerHodl = secondsSince * userStruct.assets;
@@ -495,14 +509,10 @@ contract HookableAssetAcquisition is
     function _cowSwapTWAP() internal {
         HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
 
-        console.log("yielded assets", $.yieldedAssets);
-
         require($.yieldedAssets > 0, "No yield to swap");
         require($.activeTWAPId == bytes32(0), "TWAP already active");
 
         uint256 intermediateUSDC = _swapYieldToUSDC();
-
-        console.log("intermediate", intermediateUSDC);
 
         // Generate unique TWAP ID
         bytes32 twapId = keccak256(abi.encode(address(this), USDC, $.targetAsset, block.timestamp));

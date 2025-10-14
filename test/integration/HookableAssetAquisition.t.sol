@@ -25,6 +25,11 @@ import { GPv2Order } from "../../src/libs/CoWTWAP/GPv2Order.sol";
 import { CoWTWAPLib } from "../../src/libs/CoWTWAP/CoWTWAP.sol";
 import { IConditionalOrder } from "../../src/libs/CoWTWAP/IConditionalOrder.sol";
 
+import { Hooks } from "../../lib/v4-core/src/libraries/Hooks.sol";
+import { IPoolManager } from "../../lib/v4-core/src/interfaces/IPoolManager.sol";
+import { HookMiner } from "../utils/HookMiner.sol";
+import { TWAMM } from "../../src/hooks/TWAMM.sol";
+
 interface IUniswapV3Pool {
     function slot0()
         external
@@ -237,6 +242,9 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         assertEq(mToken.balanceOf(alice), 100_000e6);
 
         vm.prank(alice);
+        hookableAssetAcquisition.activateUser();
+
+        vm.prank(alice);
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
@@ -279,6 +287,9 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         assertEq(mToken.balanceOf(alice), 100_000e6);
 
         vm.prank(alice);
+        hookableAssetAcquisition.activateUser();
+
+        vm.prank(alice);
         mToken.approve(address(swapFacility), type(uint256).max);
 
         vm.expectEmit();
@@ -286,6 +297,9 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
         vm.prank(alice);
         swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, alice);
+
+        vm.prank(bob);
+        hookableAssetAcquisition.activateUser();
 
         vm.prank(bob);
         mToken.approve(address(swapFacility), type(uint256).max);
@@ -509,6 +523,29 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
         // // Verify proportional distribution (they had equal deposits)
         // assertApproxEqRel(aliceReceived, bobReceived, 0.01e18, "Should receive approximately equal amounts");
+    }
+
+    function test_twamm() public {
+        address poolManager = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+        address create2Deployer = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+
+        console.log("pool size", poolManager.code.length);
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_INITIALIZE_FLAG |
+                Hooks.BEFORE_SWAP_FLAG |
+                Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
+                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+        );
+
+        bytes memory constructorArgs = abi.encode(poolManager, 30 minutes, address(this));
+
+        (address hookAddress, bytes32 salt) = HookMiner.find(
+            create2Deployer,
+            flags,
+            type(TWAMM).creationCode,
+            constructorArgs
+        );
     }
 
     function _mockSettlementWithActualTokens(
