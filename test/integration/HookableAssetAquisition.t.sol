@@ -25,10 +25,20 @@ import { GPv2Order } from "../../src/libs/CoWTWAP/GPv2Order.sol";
 import { CoWTWAPLib } from "../../src/libs/CoWTWAP/CoWTWAP.sol";
 import { IConditionalOrder } from "../../src/libs/CoWTWAP/IConditionalOrder.sol";
 
-import { Hooks } from "../../lib/v4-core/src/libraries/Hooks.sol";
-import { IPoolManager } from "../../lib/v4-core/src/interfaces/IPoolManager.sol";
+import { IHooks, Hooks } from "@uniswap/v4-core/src/libraries/Hooks.sol";
+import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { HookMiner } from "../utils/HookMiner.sol";
+import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
 import { TWAMM } from "../../src/hooks/TWAMM.sol";
+import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
+import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
+import { Actions } from "@uniswap/v4-periphery/src/libraries/Actions.sol";
+import { IPositionManager } from "@uniswap/v4-periphery/src/interfaces/IPositionManager.sol";
+import { LiquidityAmounts } from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
+import { TickMath } from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import { IPermit2 } from "@uniswap/v4-periphery/lib/permit2/src/interfaces/IPermit2.sol";
+import { IV4Router } from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
 
 interface IUniswapV3Pool {
     function slot0()
@@ -80,10 +90,20 @@ interface IQuoterV2 {
 
 contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
     using stdStorage for StdStorage;
+    using StateLibrary for IPoolManager;
+    using PoolIdLibrary for PoolKey;
 
     address constant UNISWAP_V3_QUOTER = 0x61fFE014bA17989E743c5F6cB21bF9697530B21e;
 
+    address constant UNISWAP_V4_UNIVERSAL_ROUTER = 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af;
+
+    address constant UNISWAP_V4_POSITION_MANAGER = 0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e;
+
+    address constant UNISWAP_V4_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+
     address constant USDC_WBTC_POOL = 0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35;
+
+    address constant UNISWAP_POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
 
     uint256 constant Q96 = 2 ** 96;
 
@@ -593,5 +613,205 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         uint256 wbtcPrice = (100 + iteration) * 1e6;
         // amount of wbtc for sell amount adjusted to 8 decimals
         return (sellAmount * wbtcPrice) / 1e12;
+    }
+
+    function test_uniswapHook() public {
+        stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
+        stdstore.target(USDC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
+
+        uint160 flags = uint160(
+            Hooks.BEFORE_INITIALIZE_FLAG |
+                Hooks.BEFORE_SWAP_FLAG |
+                Hooks.BEFORE_ADD_LIQUIDITY_FLAG |
+                Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
+        );
+
+        bytes memory constructorArgs = abi.encode(
+            address(UNISWAP_POOL_MANAGER),
+            30 minutes, // expirationInterval
+            address(this) // owner
+        );
+
+        address create2Deployer = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
+
+        console.log("finding hook address");
+
+        (address hookAddress, bytes32 salt) = HookMiner.find(
+            create2Deployer,
+            flags,
+            type(TWAMM).creationCode,
+            constructorArgs
+        );
+
+        console.log("Target hook address:", hookAddress);
+        console.log("Salt:", uint256(salt));
+
+        // Prepare the complete init code (creationCode + constructor args)
+        bytes memory initCode = abi.encodePacked(type(TWAMM).creationCode, constructorArgs);
+
+        // Arachnid's CREATE2 factory expects calldata: salt (32 bytes) + initCode
+        // It will deploy using CREATE2 opcode with that salt
+        bytes memory deploymentData = abi.encodePacked(salt, initCode);
+
+        // Deploy using the CREATE2 factory
+        (bool success, ) = create2Deployer.call(deploymentData);
+        require(success, "CREATE2 deployment failed");
+
+        // Verify deployment at expected address
+        require(hookAddress.code.length > 0, "Hook not deployed");
+
+        // Ensure token0 < token1
+        (Currency currency0, Currency currency1) = USDC < WBTC
+            ? (Currency.wrap(USDC), Currency.wrap(WBTC))
+            : (Currency.wrap(WBTC), Currency.wrap(USDC));
+
+        uint24 FEE = 3000; // 0.3%
+        int24 TICK_SPACING = 60;
+
+        PoolKey memory key = PoolKey({
+            currency0: currency0,
+            currency1: currency1,
+            fee: FEE,
+            tickSpacing: TICK_SPACING,
+            hooks: IHooks(hookAddress)
+        });
+
+        uint160 SQRT_PRICE_1_1 = 79228162514264337593543950336; // sqrt(1) * 2^96
+
+        IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, SQRT_PRICE_1_1);
+
+        vm.prank(admin);
+        hookableAssetAcquisition.setTWAMMConfig(address(hookAddress), address(UNISWAP_POOL_MANAGER), key);
+
+        (uint160 sqrtPriceX96, , uint24 protocolFee, uint24 lpFee) = IPoolManager(UNISWAP_POOL_MANAGER).getSlot0(
+            key.toId()
+        );
+
+        console.log("sqrtprice", sqrtPriceX96);
+        console.log("protocol fee", protocolFee);
+        console.log("lpFee", lpFee);
+
+        uint256 usdcAmount = 10e6;
+        uint256 wbtcAmount = 10e6;
+
+        // Approve PositionManager
+        vm.prank(alice);
+        IPermit2(UNISWAP_V4_PERMIT2).approve(USDC, UNISWAP_V4_POSITION_MANAGER, type(uint160).max, type(uint48).max);
+        vm.prank(alice);
+        IERC20(USDC).approve(UNISWAP_V4_POSITION_MANAGER, type(uint256).max);
+        vm.prank(alice);
+        IERC20(USDC).approve(UNISWAP_V4_PERMIT2, type(uint256).max);
+        vm.prank(alice);
+        IPermit2(UNISWAP_V4_PERMIT2).approve(WBTC, UNISWAP_V4_POSITION_MANAGER, type(uint160).max, type(uint48).max);
+        vm.prank(alice);
+        IERC20(WBTC).approve(UNISWAP_V4_POSITION_MANAGER, type(uint256).max);
+        vm.prank(alice);
+        IERC20(WBTC).approve(UNISWAP_V4_PERMIT2, type(uint256).max);
+
+        {
+            uint128 liquidityAmount;
+            uint256 amount0;
+            uint256 amount1;
+
+            {
+                // Define range
+                int24 tickLower = TickMath.minUsableTick(key.tickSpacing);
+                int24 tickUpper = TickMath.maxUsableTick(key.tickSpacing);
+
+                // Calculate liquidity
+                liquidityAmount = LiquidityAmounts.getLiquidityForAmounts(
+                    sqrtPriceX96,
+                    TickMath.getSqrtPriceAtTick(tickLower),
+                    TickMath.getSqrtPriceAtTick(tickUpper),
+                    usdcAmount,
+                    wbtcAmount
+                );
+
+                // Calculate exact amounts
+                (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
+                    sqrtPriceX96,
+                    TickMath.getSqrtPriceAtTick(tickLower),
+                    TickMath.getSqrtPriceAtTick(tickUpper),
+                    liquidityAmount
+                );
+            }
+
+            // Mint a new position
+            bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+
+            bytes[] memory params = new bytes[](2);
+
+            // MINT_POSITION params
+            params[0] = abi.encode(
+                key,
+                TickMath.minUsableTick(key.tickSpacing), // tickLower
+                TickMath.maxUsableTick(key.tickSpacing), // tickUpper
+                liquidityAmount,
+                10e6,
+                10e6,
+                address(this), // recipient
+                "" // hookData
+            );
+
+            // SETTLE_PAIR params
+            params[1] = abi.encode(key.currency0, key.currency1);
+
+            // Execute
+            vm.prank(alice);
+            IPositionManager(UNISWAP_V4_POSITION_MANAGER).modifyLiquidities(
+                abi.encode(actions, params),
+                vm.getBlockTimestamp() + 100 days
+            );
+        }
+        {
+            // Define swap parameters
+            bool zeroForOne = Currency.unwrap(key.currency0) == USDC; // USDC -> WBTC
+            uint128 amountIn = 1e6; // 1 USDC
+            uint128 minAmountOut = 0; // Set appropriate slippage
+
+            // Approve UniversalRouter to spend tokens via Permit2
+            vm.prank(alice);
+            IPermit2(UNISWAP_V4_PERMIT2).approve(
+                USDC,
+                UNISWAP_V4_UNIVERSAL_ROUTER,
+                type(uint160).max,
+                type(uint48).max
+            );
+
+            // Build V4 action plan using the Actions enum
+            bytes memory v4Actions = abi.encodePacked(
+                uint8(0x06) // Actions.SWAP_EXACT_IN_SINGLE
+            );
+
+            bytes[] memory v4Params = new bytes[](1);
+
+            // Encode SWAP_EXACT_IN_SINGLE parameters
+            v4Params[0] = abi.encode(
+                key, // PoolKey
+                zeroForOne, // direction
+                amountIn, // amountIn
+                minAmountOut, // amountOutMinimum
+                bytes("") // hookData (empty unless your hook needs it)
+            );
+
+            // Encode the V4 planner output
+            bytes memory v4PlannerEncoded = abi.encode(v4Actions, v4Params);
+
+            // Build UniversalRouter command
+            bytes memory commands = abi.encodePacked(
+                bytes1(uint8(0x10)) // CommandType.V4_SWAP
+            );
+
+            bytes[] memory inputs = new bytes[](1);
+            inputs[0] = v4PlannerEncoded;
+
+            // // Execute the swap
+            // vm.prank(alice);
+            // IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(
+            //     commands,
+            //     inputs,
+            //     block.timestamp + 60
+            // );
+        }
     }
 }

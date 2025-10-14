@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import { BaseHook } from "v4-periphery/src/utils/BaseHook.sol";
+import { BaseHook } from "@uniswap/v4-periphery/src/utils/BaseHook.sol";
 import { IHooks, Hooks } from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import { TickBitmap } from "@uniswap/v4-core/src/libraries/TickBitmap.sol";
 import { SqrtPriceMath } from "@uniswap/v4-core/src/libraries/SqrtPriceMath.sol";

@@ -22,6 +22,9 @@ import { GPv2Order } from "../libs/CoWTWAP/GPv2Order.sol";
 import { CoWTWAPLib } from "../libs/CoWTWAP/CoWTWAP.sol";
 import { IConditionalOrder } from "../libs/CoWTWAP/IConditionalOrder.sol";
 
+// Uniswap Imports
+import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
+
 abstract contract HookableAssetAcquisitionStorageLayout {
     /// @custom:storage-location erc7201:M0.storage.HookableAssetAcquisition
     struct HookableAssetAcquisitionStorageStruct {
@@ -38,6 +41,10 @@ abstract contract HookableAssetAcquisitionStorageLayout {
         mapping(bytes32 => CoWTWAPLib.TWAPConfig) twapConfigs;
         mapping(bytes32 => CoWTWAPLib.TWAPState) twapStates;
         bytes32 activeTWAPId;
+        // Uniswap TWAMM state
+        address uniswapPoolManager;
+        address uniswapTWAMMHook;
+        PoolKey uniswapPoolKey;
     }
 
     struct User {
@@ -238,6 +245,18 @@ contract HookableAssetAcquisition is
 
     function cowSwapTWAP() public {
         _cowSwapTWAP();
+    }
+
+    function setTWAMMConfig(
+        address _uniswapPoolManager,
+        address _uniswapTWAMMHook,
+        PoolKey memory _uniswapPoolKey
+    ) public {
+        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
+
+        $.uniswapPoolManager = _uniswapPoolManager;
+        $.uniswapTWAMMHook = _uniswapTWAMMHook;
+        $.uniswapPoolKey = _uniswapPoolKey;
     }
 
     /**
