@@ -41,6 +41,9 @@ import { IPermit2 } from "@uniswap/v4-periphery/lib/permit2/src/interfaces/IPerm
 import { IV4Router } from "@uniswap/v4-periphery/src/interfaces/IV4Router.sol";
 import { IUniversalRouter } from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
 import { Commands } from "@uniswap/universal-router/contracts/libraries/Commands.sol";
+import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import { FixedPointMathLib } from "@uniswap/v4-core/lib/solmate/src/utils/FixedPointMathLib.sol";
+import { FixedPoint96 } from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
 
 interface IUniswapV3Pool {
     function slot0()
@@ -134,8 +137,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(whaleBalance));
 
         stdstore.target(WBTC).sig("balanceOf(address)").with_key(WBTC_WHALE).checked_write(uint256(0));
-
-        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
 
         super.setUp();
 
@@ -386,8 +387,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
     function test_completeTWAPExecutionWithActualTokens() public {
         stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
 
-        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
-
         mYieldToOneHookable.enableEarning();
 
         assertEq(mToken.balanceOf(alice), 100_000e6);
@@ -551,8 +550,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         address poolManager = 0x000000000004444c5dc75cB358380D2e3dE08A90;
         address create2Deployer = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-        console.log("pool size", poolManager.code.length);
-
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG |
                 Hooks.BEFORE_SWAP_FLAG |
@@ -618,8 +615,8 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
     }
 
     function test_uniswapHook() public {
-        stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
-        stdstore.target(USDC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
+        stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(type(uint128).max);
+        stdstore.target(USDC).sig("balanceOf(address)").with_key(alice).checked_write(type(uint128).max);
 
         uint160 flags = uint160(
             Hooks.BEFORE_INITIALIZE_FLAG |
@@ -636,17 +633,12 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
         address create2Deployer = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
 
-        console.log("finding hook address");
-
         (address hookAddress, bytes32 salt) = HookMiner.find(
             create2Deployer,
             flags,
             type(TWAMM).creationCode,
             constructorArgs
         );
-
-        console.log("Target hook address:", hookAddress);
-        console.log("Salt:", uint256(salt));
 
         // Prepare the complete init code (creationCode + constructor args)
         bytes memory initCode = abi.encodePacked(type(TWAMM).creationCode, constructorArgs);
@@ -678,23 +670,19 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             hooks: IHooks(hookAddress)
         });
 
-        uint160 SQRT_PRICE_1_1 = 79228162514264337593543950336; // sqrt(1) * 2^96
+        uint160 sqrtPriceRatio = uint160(FixedPointMathLib.sqrt((100_000 * 1e6) / 1e8) * FixedPoint96.Q96);
 
-        IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, SQRT_PRICE_1_1);
+        IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, sqrtPriceRatio);
+        // IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, SQRT_PRICE_1_1);
 
         vm.prank(admin);
         hookableAssetAcquisition.setTWAMMConfig(address(hookAddress), address(UNISWAP_POOL_MANAGER), key);
 
-        (uint160 sqrtPriceX96, , uint24 protocolFee, uint24 lpFee) = IPoolManager(UNISWAP_POOL_MANAGER).getSlot0(
-            key.toId()
-        );
+        (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee) = IPoolManager(UNISWAP_POOL_MANAGER)
+            .getSlot0(key.toId());
 
-        console.log("sqrtprice", sqrtPriceX96);
-        console.log("protocol fee", protocolFee);
-        console.log("lpFee", lpFee);
-
-        uint256 usdcAmount = 10e6;
-        uint256 wbtcAmount = 10e6;
+        uint256 usdcAmount = 100_000_0000_000e6;
+        uint256 wbtcAmount = 10_000_000e8;
 
         // Approve PositionManager
         vm.prank(alice);
@@ -715,42 +703,41 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             uint256 amount0;
             uint256 amount1;
 
-            {
-                // Define range
-                int24 tickLower = TickMath.minUsableTick(key.tickSpacing);
-                int24 tickUpper = TickMath.maxUsableTick(key.tickSpacing);
+            // Define range
+            int24 tickLower = (tick / TICK_SPACING) * TICK_SPACING - (TICK_SPACING * 20);
+            int24 tickUpper = tickLower + (TICK_SPACING * 120);
 
-                // Calculate liquidity
-                liquidityAmount = LiquidityAmounts.getLiquidityForAmounts(
-                    sqrtPriceX96,
-                    TickMath.getSqrtPriceAtTick(tickLower),
-                    TickMath.getSqrtPriceAtTick(tickUpper),
-                    usdcAmount,
-                    wbtcAmount
-                );
+            // Calculate liquidity
+            liquidityAmount = LiquidityAmounts.getLiquidityForAmounts(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(tickLower),
+                TickMath.getSqrtPriceAtTick(tickUpper),
+                wbtcAmount,
+                usdcAmount
+            );
 
-                // Calculate exact amounts
-                (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
-                    sqrtPriceX96,
-                    TickMath.getSqrtPriceAtTick(tickLower),
-                    TickMath.getSqrtPriceAtTick(tickUpper),
-                    liquidityAmount
-                );
-            }
+            // Calculate exact amounts
+            (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
+                sqrtPriceX96,
+                TickMath.getSqrtPriceAtTick(tickLower),
+                TickMath.getSqrtPriceAtTick(tickUpper),
+                liquidityAmount
+            );
 
             // Mint a new position
             bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+            console.log("amounts", amount0, amount1);
 
             bytes[] memory params = new bytes[](2);
 
             // MINT_POSITION params
             params[0] = abi.encode(
                 key,
-                TickMath.minUsableTick(key.tickSpacing), // tickLower
-                TickMath.maxUsableTick(key.tickSpacing), // tickUpper
+                tickLower,
+                tickUpper,
                 liquidityAmount,
-                10e6,
-                10e6,
+                type(uint256).max,
+                type(uint256).max,
                 address(this), // recipient
                 "" // hookData
             );
@@ -796,14 +783,14 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
             bytes[] memory params = new bytes[](3);
 
-            uint128 amountIn = 1e6;
+            uint128 amountIn = 1e8;
             uint128 minAmountOut = 0;
 
             // First parameter: swap configuration
             params[0] = abi.encode(
                 IV4Router.ExactInputSingleParams({
                     poolKey: key,
-                    zeroForOne: true, // true if we're swapping token0 for token1
+                    zeroForOne: true,
                     amountIn: amountIn, // amount of tokens we're swapping
                     amountOutMinimum: minAmountOut, // minimum amount we expect to receive
                     hookData: bytes("") // no hook data needed
@@ -833,8 +820,20 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             uint256 wbtcAfter = IERC20(WBTC).balanceOf(alice);
             uint256 usdcAfter = IERC20(USDC).balanceOf(alice);
 
-            console.log("before", wbtcBefore, usdcBefore);
-            console.log("after", wbtcAfter, usdcAfter);
+            console.log("swapped", wbtcBefore - wbtcAfter, usdcAfter - usdcBefore);
+
+            wbtcBefore = IERC20(WBTC).balanceOf(alice);
+            usdcBefore = IERC20(USDC).balanceOf(alice);
+
+            // Execute the swap
+            deadline = block.timestamp + 20;
+            vm.prank(alice);
+            IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
+
+            wbtcAfter = IERC20(WBTC).balanceOf(alice);
+            usdcAfter = IERC20(USDC).balanceOf(alice);
+
+            console.log("swapped", wbtcBefore - wbtcAfter, usdcAfter - usdcBefore);
         }
     }
 }
