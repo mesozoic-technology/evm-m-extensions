@@ -670,10 +670,11 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             hooks: IHooks(hookAddress)
         });
 
-        uint160 sqrtPriceRatio = uint160(FixedPointMathLib.sqrt((100_000 * 1e6) / 1e8) * FixedPoint96.Q96);
+        uint160 sqrtPriceRatio = uint160(
+            FixedPointMathLib.sqrt((1e1 * 1e8 * FixedPoint96.Q96 * FixedPoint96.Q96) / (1e6))
+        );
 
         IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, sqrtPriceRatio);
-        // IPoolManager(UNISWAP_POOL_MANAGER).initialize(key, SQRT_PRICE_1_1);
 
         vm.prank(admin);
         hookableAssetAcquisition.setTWAMMConfig(address(hookAddress), address(UNISWAP_POOL_MANAGER), key);
@@ -684,7 +685,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         uint256 usdcAmount = 100_000_0000_000e6;
         uint256 wbtcAmount = 10_000_000e8;
 
-        // Approve PositionManager
         vm.prank(alice);
         IPermit2(UNISWAP_V4_PERMIT2).approve(USDC, UNISWAP_V4_POSITION_MANAGER, type(uint160).max, type(uint48).max);
         vm.prank(alice);
@@ -703,11 +703,11 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             uint256 amount0;
             uint256 amount1;
 
-            // Define range
+            // define range
             int24 tickLower = (tick / TICK_SPACING) * TICK_SPACING - (TICK_SPACING * 20);
             int24 tickUpper = tickLower + (TICK_SPACING * 120);
 
-            // Calculate liquidity
+            // calculate liquidity
             liquidityAmount = LiquidityAmounts.getLiquidityForAmounts(
                 sqrtPriceX96,
                 TickMath.getSqrtPriceAtTick(tickLower),
@@ -716,7 +716,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
                 usdcAmount
             );
 
-            // Calculate exact amounts
+            // calculate exact amounts
             (amount0, amount1) = LiquidityAmounts.getAmountsForLiquidity(
                 sqrtPriceX96,
                 TickMath.getSqrtPriceAtTick(tickLower),
@@ -724,7 +724,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
                 liquidityAmount
             );
 
-            // Mint a new position
+            // mint a new position
             bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
             console.log("amounts", amount0, amount1);
 
@@ -745,7 +745,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             // SETTLE_PAIR params
             params[1] = abi.encode(key.currency0, key.currency1);
 
-            // Execute
+            // execute
             vm.prank(alice);
             IPositionManager(UNISWAP_V4_POSITION_MANAGER).modifyLiquidities(
                 abi.encode(actions, params),
@@ -774,7 +774,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
             bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
 
-            // Encode V4Router actions
+            // encode V4Router actions
             bytes memory actions = abi.encodePacked(
                 uint8(Actions.SWAP_EXACT_IN_SINGLE),
                 uint8(Actions.SETTLE_ALL),
@@ -786,7 +786,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             uint128 amountIn = 1e8;
             uint128 minAmountOut = 0;
 
-            // First parameter: swap configuration
+            // first parameter: swap configuration
             params[0] = abi.encode(
                 IV4Router.ExactInputSingleParams({
                     poolKey: key,
@@ -797,22 +797,22 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
                 })
             );
 
-            // Second parameter: specify input tokens for the swap
+            // second parameter: specify input tokens for the swap
             // encode SETTLE_ALL parameters
             params[1] = abi.encode(key.currency0, amountIn);
 
-            // Third parameter: specify output tokens from the swap
+            // third parameter: specify output tokens from the swap
             params[2] = abi.encode(key.currency1, minAmountOut);
 
             bytes[] memory inputs = new bytes[](1);
 
-            // Combine actions and params into inputs
+            // combine actions and params into inputs
             inputs[0] = abi.encode(actions, params);
 
             uint256 wbtcBefore = IERC20(WBTC).balanceOf(alice);
             uint256 usdcBefore = IERC20(USDC).balanceOf(alice);
 
-            // Execute the swap
+            // execute the swap
             uint256 deadline = block.timestamp + 20;
             vm.prank(alice);
             IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
@@ -825,7 +825,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             wbtcBefore = IERC20(WBTC).balanceOf(alice);
             usdcBefore = IERC20(USDC).balanceOf(alice);
 
-            // Execute the swap
             deadline = block.timestamp + 20;
             vm.prank(alice);
             IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
