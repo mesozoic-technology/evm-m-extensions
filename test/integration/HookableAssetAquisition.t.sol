@@ -30,7 +30,6 @@ import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { HookMiner } from "../utils/HookMiner.sol";
 import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
-import { TWAMM } from "../../src/hooks/TWAMM.sol";
 import { StateLibrary } from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import { PoolId, PoolIdLibrary } from "@uniswap/v4-core/src/types/PoolId.sol";
 import { Actions } from "@uniswap/v4-periphery/src/libraries/Actions.sol";
@@ -44,6 +43,8 @@ import { Commands } from "@uniswap/universal-router/contracts/libraries/Commands
 import { FullMath } from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import { FixedPointMathLib } from "@uniswap/v4-core/lib/solmate/src/utils/FixedPointMathLib.sol";
 import { FixedPoint96 } from "@uniswap/v4-core/src/libraries/FixedPoint96.sol";
+
+import { TWAMM, ITWAMM } from "../../src/hooks/TWAMM.sol";
 
 interface IUniswapV3Pool {
     function slot0()
@@ -157,7 +158,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         (originalUsdcWbtcPrice, , , ) = IQuoterV2(UNISWAP_V3_QUOTER).quoteExactInputSingle(params);
 
         _giveM(alice, 100_000e6);
-        _giveM(bob, 100_000e6);
+        _giveM(bob, 1_000_000e6);
 
         mYieldToOneHookable = MYieldToOneHookableHarness(
             Upgrades.deployTransparentProxy(
@@ -639,17 +640,18 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             type(TWAMM).creationCode,
             constructorArgs
         );
+        {
+            // Prepare the complete init code (creationCode + constructor args)
+            bytes memory initCode = abi.encodePacked(type(TWAMM).creationCode, constructorArgs);
 
-        // Prepare the complete init code (creationCode + constructor args)
-        bytes memory initCode = abi.encodePacked(type(TWAMM).creationCode, constructorArgs);
+            // Arachnid's CREATE2 factory expects calldata: salt (32 bytes) + initCode
+            // It will deploy using CREATE2 opcode with that salt
+            bytes memory deploymentData = abi.encodePacked(salt, initCode);
 
-        // Arachnid's CREATE2 factory expects calldata: salt (32 bytes) + initCode
-        // It will deploy using CREATE2 opcode with that salt
-        bytes memory deploymentData = abi.encodePacked(salt, initCode);
-
-        // Deploy using the CREATE2 factory
-        (bool success, ) = create2Deployer.call(deploymentData);
-        require(success, "CREATE2 deployment failed");
+            // Deploy using the CREATE2 factory
+            (bool success, ) = create2Deployer.call(deploymentData);
+            require(success, "CREATE2 deployment failed");
+        }
 
         // Verify deployment at expected address
         require(hookAddress.code.length > 0, "Hook not deployed");
@@ -659,13 +661,12 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             ? (Currency.wrap(USDC), Currency.wrap(WBTC))
             : (Currency.wrap(WBTC), Currency.wrap(USDC));
 
-        uint24 FEE = 3000; // 0.3%
         int24 TICK_SPACING = 60;
 
         PoolKey memory key = PoolKey({
             currency0: currency0,
             currency1: currency1,
-            fee: FEE,
+            fee: 3000,
             tickSpacing: TICK_SPACING,
             hooks: IHooks(hookAddress)
         });
@@ -678,12 +679,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
         vm.prank(admin);
         hookableAssetAcquisition.setTWAMMConfig(address(hookAddress), address(UNISWAP_POOL_MANAGER), key);
-
-        (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee) = IPoolManager(UNISWAP_POOL_MANAGER)
-            .getSlot0(key.toId());
-
-        uint256 usdcAmount = 100_000_0000_000e6;
-        uint256 wbtcAmount = 10_000_000e8;
 
         vm.prank(alice);
         IPermit2(UNISWAP_V4_PERMIT2).approve(USDC, UNISWAP_V4_POSITION_MANAGER, type(uint160).max, type(uint48).max);
@@ -699,6 +694,12 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         IERC20(WBTC).approve(UNISWAP_V4_PERMIT2, type(uint256).max);
 
         {
+            (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee) = IPoolManager(UNISWAP_POOL_MANAGER)
+                .getSlot0(key.toId());
+
+            uint256 usdcAmount = 10_000_000e6;
+            uint256 wbtcAmount = 100e8;
+
             uint128 liquidityAmount;
             uint256 amount0;
             uint256 amount1;
@@ -753,86 +754,267 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             );
         }
         {
-            vm.prank(alice);
-            IERC20(USDC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
-            vm.prank(alice);
-            IPermit2(UNISWAP_V4_PERMIT2).approve(
-                USDC,
-                address(UNISWAP_V4_UNIVERSAL_ROUTER),
-                type(uint160).max,
-                type(uint48).max
-            );
-            vm.prank(alice);
-            IERC20(WBTC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
-            vm.prank(alice);
-            IPermit2(UNISWAP_V4_PERMIT2).approve(
-                WBTC,
-                address(UNISWAP_V4_UNIVERSAL_ROUTER),
-                type(uint160).max,
-                type(uint48).max
-            );
-
-            bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
-
-            // encode V4Router actions
-            bytes memory actions = abi.encodePacked(
-                uint8(Actions.SWAP_EXACT_IN_SINGLE),
-                uint8(Actions.SETTLE_ALL),
-                uint8(Actions.TAKE_ALL)
-            );
-
-            bytes[] memory params = new bytes[](3);
-
-            uint128 amountIn = 1e8;
-            uint128 minAmountOut = 0;
-
-            // first parameter: swap configuration
-            params[0] = abi.encode(
-                IV4Router.ExactInputSingleParams({
-                    poolKey: key,
-                    zeroForOne: true,
-                    amountIn: amountIn, // amount of tokens we're swapping
-                    amountOutMinimum: minAmountOut, // minimum amount we expect to receive
-                    hookData: bytes("") // no hook data needed
-                })
-            );
-
-            // second parameter: specify input tokens for the swap
-            // encode SETTLE_ALL parameters
-            params[1] = abi.encode(key.currency0, amountIn);
-
-            // third parameter: specify output tokens from the swap
-            params[2] = abi.encode(key.currency1, minAmountOut);
-
-            bytes[] memory inputs = new bytes[](1);
-
-            // combine actions and params into inputs
-            inputs[0] = abi.encode(actions, params);
-
-            uint256 wbtcBefore = IERC20(WBTC).balanceOf(alice);
-            uint256 usdcBefore = IERC20(USDC).balanceOf(alice);
-
-            // execute the swap
-            uint256 deadline = block.timestamp + 20;
-            vm.prank(alice);
-            IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
-
-            uint256 wbtcAfter = IERC20(WBTC).balanceOf(alice);
-            uint256 usdcAfter = IERC20(USDC).balanceOf(alice);
-
-            console.log("swapped", wbtcBefore - wbtcAfter, usdcAfter - usdcBefore);
-
-            wbtcBefore = IERC20(WBTC).balanceOf(alice);
-            usdcBefore = IERC20(USDC).balanceOf(alice);
-
-            deadline = block.timestamp + 20;
-            vm.prank(alice);
-            IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
-
-            wbtcAfter = IERC20(WBTC).balanceOf(alice);
-            usdcAfter = IERC20(USDC).balanceOf(alice);
-
-            console.log("swapped", wbtcBefore - wbtcAfter, usdcAfter - usdcBefore);
+            _swapOneWBTC(key);
         }
+
+        hookableAssetAcquisition.setTWAMMConfig(UNISWAP_POOL_MANAGER, hookAddress, key);
+
+        mYieldToOneHookable.enableEarning();
+
+        assertEq(mToken.balanceOf(bob), 1_000_000e6);
+
+        vm.prank(bob);
+        hookableAssetAcquisition.activateUser();
+
+        vm.prank(bob);
+        mToken.approve(address(swapFacility), type(uint256).max);
+
+        vm.expectEmit();
+        emit HookableAssetAcquisitionHarness.HookCalled(address(0), bob, 1_000_000e6);
+
+        vm.prank(bob);
+        swapFacility.swapInM(address(mYieldToOneHookable), 1_000_000e6, bob);
+
+        assertEq(mYieldToOneHookable.balanceOf(bob), 1_000_000e6, "!");
+
+        vm.warp(vm.getBlockTimestamp() + 31449600);
+
+        mYieldToOneHookable.claimYield();
+
+        hookableAssetAcquisition.twammSwap();
+
+        console.log("TIME NOW", vm.getBlockTimestamp());
+        console.log("ten days", uint256(10 days));
+
+        ITWAMM.OrderKey memory orderKey = hookableAssetAcquisition.getTWAMMOrderKey(0);
+
+        console.log("order id", orderKey.owner, orderKey.expiration, orderKey.zeroForOne);
+        console.log("hookable assets", address(hookableAssetAcquisition));
+
+        uint256 sellRateCurrent;
+        uint256 earningsFactorCurrent;
+        uint256 owed;
+        uint256 tokens0OwedDelta;
+        uint256 tokens1OwedDelta;
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        console.log("time", vm.getBlockTimestamp());
+        console.log("expiration", orderKey.expiration);
+        console.log("a day", uint256(1 days));
+
+        hookableAssetAcquisition.twammClaim();
+
+        console.log("target assets", hookableAssetAcquisition.getTargetAssets());
+
+        // uint256 targetAssets = hookableAssetAcquisition.getTargetAssets();
+
+        // vm.prank(bob);
+        // hookableAssetAcquisition.claim();
+
+        // console.log("target assets", targetAssets);
+
+        // assertEq(IERC20(WBTC).balanceOf(bob), targetAssets, "bob should hold all of the target assets");
+        // assertEq(
+        //     hookableAssetAcquisition.getTargetAssets(),
+        //     0,
+        //     "HookableAssetAcquisition should not have any remaining target assets"
+        // );
+        // assertEq(hookableAssetAcquisition.getHodling(), 0, "HookableAssetAcquisition should have 0 hodling");
+
+        // (uint256 bobAssets, uint256 bobUpdate, uint256 bobHodl) = hookableAssetAcquisition.getUser(bob);
+
+        // assertEq(bobHodl, 0, "bob should have 0 hodl");
+    }
+
+    function _swapOneWBTC(PoolKey memory key) internal {
+        console.log("SWAPPING!!!!");
+
+        vm.prank(alice);
+        IERC20(USDC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
+        vm.prank(alice);
+        IPermit2(UNISWAP_V4_PERMIT2).approve(
+            USDC,
+            address(UNISWAP_V4_UNIVERSAL_ROUTER),
+            type(uint160).max,
+            type(uint48).max
+        );
+        vm.prank(alice);
+        IERC20(WBTC).approve(address(UNISWAP_V4_PERMIT2), type(uint256).max);
+        vm.prank(alice);
+        IPermit2(UNISWAP_V4_PERMIT2).approve(
+            WBTC,
+            address(UNISWAP_V4_UNIVERSAL_ROUTER),
+            type(uint160).max,
+            type(uint48).max
+        );
+
+        bytes memory commands = abi.encodePacked(uint8(Commands.V4_SWAP));
+
+        // encode V4Router actions
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.SWAP_EXACT_IN_SINGLE),
+            uint8(Actions.SETTLE_ALL),
+            uint8(Actions.TAKE_ALL)
+        );
+
+        bytes[] memory params = new bytes[](3);
+
+        uint128 amountIn = 1e8;
+        uint128 minAmountOut = 0;
+
+        // first parameter: swap configuration
+        params[0] = abi.encode(
+            IV4Router.ExactInputSingleParams({
+                poolKey: key,
+                zeroForOne: true,
+                amountIn: amountIn, // amount of tokens we're swapping
+                amountOutMinimum: minAmountOut, // minimum amount we expect to receive
+                hookData: bytes("") // no hook data needed
+            })
+        );
+
+        // second parameter: specify input tokens for the swap
+        // encode SETTLE_ALL parameters
+        params[1] = abi.encode(key.currency0, amountIn);
+
+        // third parameter: specify output tokens from the swap
+        params[2] = abi.encode(key.currency1, minAmountOut);
+
+        bytes[] memory inputs = new bytes[](1);
+
+        // combine actions and params into inputs
+        inputs[0] = abi.encode(actions, params);
+
+        uint256 wbtcBefore = IERC20(WBTC).balanceOf(alice);
+        uint256 usdcBefore = IERC20(USDC).balanceOf(alice);
+
+        // execute the swap
+        uint256 deadline = block.timestamp + 20;
+        vm.prank(alice);
+        IUniversalRouter(UNISWAP_V4_UNIVERSAL_ROUTER).execute(commands, inputs, deadline);
+
+        uint256 wbtcAfter = IERC20(WBTC).balanceOf(alice);
+        uint256 usdcAfter = IERC20(USDC).balanceOf(alice);
+
+        console.log("swapped", wbtcBefore - wbtcAfter, usdcAfter - usdcBefore);
     }
 }

@@ -249,4 +249,6 @@ interface ITWAMM {
     /// @param key The pool key associated with the TWAMM.
     /// @param targetTimestamp The timestamp until which to process outstanding TWAMM orders (must be >= lastVirtualOrderTimestamp and <= block.timestamp).
     function executeTWAMMOrders(PoolKey memory key, uint256 targetTimestamp) external;
+
+    function tokensOwed(Currency token, address owner) external returns (uint256);
 }

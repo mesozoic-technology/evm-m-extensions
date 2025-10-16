@@ -22,8 +22,12 @@ import { GPv2Order } from "../libs/CoWTWAP/GPv2Order.sol";
 import { CoWTWAPLib } from "../libs/CoWTWAP/CoWTWAP.sol";
 import { IConditionalOrder } from "../libs/CoWTWAP/IConditionalOrder.sol";
 
-// Uniswap Imports
+// Uniswap imports
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
+import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
+
+// Uniswap TWAMM Hook imports
+import { ITWAMM } from "../hooks/ITWAMM.sol";
 
 abstract contract HookableAssetAcquisitionStorageLayout {
     /// @custom:storage-location erc7201:M0.storage.HookableAssetAcquisition
@@ -45,6 +49,8 @@ abstract contract HookableAssetAcquisitionStorageLayout {
         address uniswapPoolManager;
         address uniswapTWAMMHook;
         PoolKey uniswapPoolKey;
+        bytes32[] uniswapTWAMMOrderIds;
+        ITWAMM.OrderKey[] uniswapTWAMMOrderKeys;
     }
 
     struct User {
@@ -204,6 +210,14 @@ contract HookableAssetAcquisition is
         return _getHookableAssetAcquisitionStorageLocation().activeTWAPId;
     }
 
+    function getTWAMMOrderId(uint256 index) public view returns (bytes32) {
+        return _getHookableAssetAcquisitionStorageLocation().uniswapTWAMMOrderIds[index];
+    }
+
+    function getTWAMMOrderKey(uint256 index) public view returns (ITWAMM.OrderKey memory) {
+        return _getHookableAssetAcquisitionStorageLocation().uniswapTWAMMOrderKeys[index];
+    }
+
     function getActiveTWAPStatus()
         public
         view
@@ -245,6 +259,14 @@ contract HookableAssetAcquisition is
 
     function cowSwapTWAP() public {
         _cowSwapTWAP();
+    }
+
+    function twammSwap() public {
+        _twammSwap();
+    }
+
+    function twammClaim() public {
+        _twammClaim();
     }
 
     function setTWAMMConfig(
@@ -557,6 +579,51 @@ contract HookableAssetAcquisition is
 
         // Register with ComposableCoW
         CoWTWAPLib.registerTWAPWithComposableCoW(address(this), twapId);
+    }
+
+    function _twammSwap() internal {
+        // address uniswapPoolManager;
+        // address uniswapTWAMMHook;
+        // PoolKey uniswapPoolKey;
+
+        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
+
+        uint256 intermediateUSDC = _swapYieldToUSDC();
+
+        console.log("intermediate", intermediateUSDC);
+
+        IERC20(USDC).approve($.uniswapTWAMMHook, intermediateUSDC);
+
+        ITWAMM.SubmitOrderParams memory orderParams = ITWAMM.SubmitOrderParams({
+            key: $.uniswapPoolKey,
+            zeroForOne: Currency.unwrap($.uniswapPoolKey.currency0) == $.targetAsset ? false : true,
+            amountIn: intermediateUSDC,
+            duration: 10 days
+        });
+
+        (bytes32 orderId, ITWAMM.OrderKey memory orderKey) = ITWAMM($.uniswapTWAMMHook).submitOrder(orderParams);
+
+        console.log("order id");
+        console.logBytes32(orderId);
+
+        $.uniswapTWAMMOrderIds.push(orderId);
+        $.uniswapTWAMMOrderKeys.push(orderKey);
+
+        console.log("order key", orderKey.owner, orderKey.expiration, orderKey.zeroForOne);
+    }
+
+    function _twammClaim() internal {
+        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
+
+        (uint256 _claimed0, uint256 _claimed1) = ITWAMM($.uniswapTWAMMHook).claimTokensByPoolKey($.uniswapPoolKey);
+
+        if (Currency.unwrap($.uniswapPoolKey.currency0) == $.targetAsset) {
+            $.targetAssets += _claimed0;
+            $.yieldedAssets += _claimed1;
+        } else {
+            $.targetAssets += _claimed1;
+            $.yieldedAssets += _claimed0;
+        }
     }
 
     function _swapYieldToUSDC() internal returns (uint256 usdcAmount) {
