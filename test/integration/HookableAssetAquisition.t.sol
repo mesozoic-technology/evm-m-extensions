@@ -385,168 +385,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         assertEq(bobAssets, 50_000e6, "bob should have original 50_000e6 balance");
     }
 
-    function test_completeTWAPExecutionWithActualTokens() public {
-        stdstore.target(WBTC).sig("balanceOf(address)").with_key(alice).checked_write(uint256(100e8));
-
-        mYieldToOneHookable.enableEarning();
-
-        assertEq(mToken.balanceOf(alice), 100_000e6);
-
-        vm.prank(alice);
-        mToken.approve(address(swapFacility), type(uint256).max);
-
-        vm.expectEmit();
-        emit HookableAssetAcquisitionHarness.HookCalled(address(0), alice, 50_000e6);
-
-        vm.prank(alice);
-        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, alice);
-
-        vm.prank(bob);
-        mToken.approve(address(swapFacility), type(uint256).max);
-
-        vm.expectEmit();
-        emit HookableAssetAcquisitionHarness.HookCalled(address(0), bob, 50_000e6);
-
-        vm.prank(bob);
-        swapFacility.swapInM(address(mYieldToOneHookable), 50_000e6, bob);
-
-        assertEq(mYieldToOneHookable.balanceOf(bob), 50_000e6);
-
-        assertEq(mYieldToOneHookable.totalSupply(), 100_000e6);
-
-        vm.warp(vm.getBlockTimestamp() + 31449600);
-
-        mYieldToOneHookable.claimYield();
-
-        // ============ SETUP PHASE ============
-        console.log("=== Starting TWAP Test with Actual Tokens ===");
-
-        uint256 yieldBalance = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
-        require(yieldBalance > 0, "No yield accumulated");
-
-        // Create a TWAP order based on actual yield
-        uint256 numberOfParts = 10;
-        uint256 partDuration = 600; // ten minutes
-
-        hookableAssetAcquisition.cowSwapTWAP();
-
-        bytes32 twapId = hookableAssetAcquisition.getActiveTWAPId();
-        require(twapId != bytes32(0), "TWAP not created");
-
-        // Verify TWAP was created with actual amounts
-        (uint256 totalAmount, uint256 numParts, uint256 currentPart, , ) = hookableAssetAcquisition
-            .getActiveTWAPStatus();
-
-        assertEq(numParts, 10, "Should have 10 parts");
-        assertEq(currentPart, 0, "Should start at part 0");
-
-        // Track USDC balance (some might already exist from other operations)
-        uint256 initialUsdcBalance = IERC20(USDC).balanceOf(address(hookableAssetAcquisition));
-
-        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
-
-        // ============ EXECUTION PHASE ============
-
-        for (uint256 i = 0; i < numberOfParts; i++) {
-            console.log("\n--- Executing Part", i + 1, "---");
-
-            {
-                (, , uint256 newCurrentPart, uint256 amountSold, ) = hookableAssetAcquisition.getActiveTWAPStatus();
-                console.log("start cp", newCurrentPart);
-                console.log("start as", amountSold);
-            }
-
-            // Fast forward time to make next part ready
-            vm.warp(block.timestamp + partDuration);
-
-            // 1. Get the order (simulating what watchtower does)
-            GPv2Order.Data memory order = hookableAssetAcquisition.getTradeableOrder(
-                address(hookableAssetAcquisition),
-                address(this),
-                abi.encode(twapId),
-                ""
-            );
-
-            console.log("Order generated for", order.sellAmount / 1e6, "tokens");
-
-            // Verify order parameters
-            assertEq(address(order.sellToken), USDC, "Wrong sell token");
-            assertEq(address(order.buyToken), WBTC, "Wrong buy token");
-            assertEq(order.receiver, address(hookableAssetAcquisition), "Wrong receiver");
-
-            // 2. Verify signature (what settlement contract does)
-            bytes32 orderHash = GPv2Order.hash(order, CoWTWAPLib.DOMAIN_SEPARATOR);
-            bytes4 magic = hookableAssetAcquisition.isValidSignature(orderHash, abi.encode(twapId));
-            assertEq(magic, bytes4(0x1626ba7e), "Invalid signature");
-
-            // 3. Mock the settlement execution
-            uint256 balanceBefore = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
-            uint256 usdcReceived = _mockSettlementWithActualTokens(order, i);
-            uint256 balanceAfter = mYieldToOneHookable.balanceOf(address(hookableAssetAcquisition));
-
-            // 4. Record the execution
-            hookableAssetAcquisition.recordTWAPExecution(twapId, order.sellAmount, usdcReceived);
-
-            // Verify state updated
-            (, , uint256 newCurrentPart, uint256 amountSold, ) = hookableAssetAcquisition.getActiveTWAPStatus();
-
-            console.log("current part", newCurrentPart);
-            console.log("amount sold", amountSold);
-
-            assertEq(newCurrentPart, i + 1, "Current part should increment");
-        }
-
-        // ============ COMPLETION PHASE ============
-        console.log("\n=== TWAP Execution Complete ===");
-
-        // Verify TWAP is complete
-        (, , uint256 finalPart, uint256 totalSold, uint256 totalBought) = hookableAssetAcquisition
-            .getActiveTWAPStatus();
-
-        console.log("final part", finalPart);
-        console.log("total sold", totalSold);
-        console.log("total bought", totalBought);
-
-        assertEq(finalPart, numberOfParts, "Should have executed all parts");
-
-        console.log("Final results:");
-        console.log("  Total USDC sold:", totalSold);
-        console.log("  Total WBTC received:", totalBought);
-
-        uint256 wbtcBalance = IERC20(WBTC).balanceOf(address(hookableAssetAcquisition));
-        assertEq(wbtcBalance, totalBought, "Should have acquired WBTC");
-
-        // // ============ USER CLAIMS ============
-        // console.log("\n=== User Claims ===");
-
-        // // Alice can now claim her share of WBTC
-        // uint256 aliceWbtcBefore = IERC20(WBTC).balanceOf(alice);
-
-        // vm.prank(alice);
-        // acquisition.claim();
-
-        // uint256 aliceWbtcAfter = IERC20(WBTC).balanceOf(alice);
-        // uint256 aliceReceived = aliceWbtcAfter - aliceWbtcBefore;
-
-        // console.log("Alice claimed:", aliceReceived, "sats of WBTC");
-        // assertGt(aliceReceived, 0, "Alice should receive WBTC");
-
-        // // Bob claims his share
-        // uint256 bobWbtcBefore = IERC20(WBTC).balanceOf(bob);
-
-        // vm.prank(bob);
-        // acquisition.claim();
-
-        // uint256 bobWbtcAfter = IERC20(WBTC).balanceOf(bob);
-        // uint256 bobReceived = bobWbtcAfter - bobWbtcBefore;
-
-        // console.log("Bob claimed:", bobReceived, "sats of WBTC");
-        // assertGt(bobReceived, 0, "Bob should receive WBTC");
-
-        // // Verify proportional distribution (they had equal deposits)
-        // assertApproxEqRel(aliceReceived, bobReceived, 0.01e18, "Should receive approximately equal amounts");
-    }
-
     function test_twamm() public {
         address poolManager = 0x000000000004444c5dc75cB358380D2e3dE08A90;
         address create2Deployer = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
@@ -781,6 +619,8 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
 
         mYieldToOneHookable.claimYield();
 
+        uint256 yieldedAssets = hookableAssetAcquisition.getYieldedAssets();
+
         hookableAssetAcquisition.twammSwap();
 
         console.log("TIME NOW", vm.getBlockTimestamp());
@@ -797,17 +637,7 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         uint256 tokens0OwedDelta;
         uint256 tokens1OwedDelta;
 
-        vm.warp(vm.getBlockTimestamp() + 1 days);
-        _swapOneWBTC(key);
-        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
-        console.log("sell rate current", sellRateCurrent);
-        console.log("earningsFactorCurrent", earningsFactorCurrent);
-        vm.prank(address(hookableAssetAcquisition));
-        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
-        console.log("tokens0OwedDelta", tokens0OwedDelta);
-        console.log("tokens1OwedDelta", tokens1OwedDelta);
-        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
-        console.log("owed", owed);
+        (uint160 sqrtPriceBeforeX96, , , ) = IPoolManager(UNISWAP_POOL_MANAGER).getSlot0(key.toId());
 
         vm.warp(vm.getBlockTimestamp() + 1 days);
         _swapOneWBTC(key);
@@ -917,32 +747,37 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
         owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
         console.log("owed", owed);
 
-        console.log("time", vm.getBlockTimestamp());
-        console.log("expiration", orderKey.expiration);
-        console.log("a day", uint256(1 days));
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        _swapOneWBTC(key);
+        (sellRateCurrent, earningsFactorCurrent) = ITWAMM(hookAddress).getOrderPool(key, false); // true for zeroForOne
+        console.log("sell rate current", sellRateCurrent);
+        console.log("earningsFactorCurrent", earningsFactorCurrent);
+        vm.prank(address(hookableAssetAcquisition));
+        (tokens0OwedDelta, tokens1OwedDelta) = ITWAMM(hookAddress).sync(ITWAMM.SyncParams(key, orderKey));
+        console.log("tokens0OwedDelta", tokens0OwedDelta);
+        console.log("tokens1OwedDelta", tokens1OwedDelta);
+        owed = ITWAMM(hookAddress).tokensOwed(Currency.wrap(WBTC), address(hookableAssetAcquisition));
+        console.log("owed", owed);
+
+        (uint160 sqrtPriceAfterX96, , , ) = IPoolManager(UNISWAP_POOL_MANAGER).getSlot0(key.toId());
 
         hookableAssetAcquisition.twammClaim();
 
-        console.log("target assets", hookableAssetAcquisition.getTargetAssets());
+        uint256 targetAssets = hookableAssetAcquisition.getTargetAssets();
 
-        // uint256 targetAssets = hookableAssetAcquisition.getTargetAssets();
+        uint256 priceBefore = _getToken0PriceFromSqrtPrice(sqrtPriceBeforeX96, 1e8);
+        uint256 priceAfter = _getToken0PriceFromSqrtPrice(sqrtPriceAfterX96, 1e8);
+        uint256 avg = (priceBefore + priceAfter) / 2;
+    }
 
-        // vm.prank(bob);
-        // hookableAssetAcquisition.claim();
+    // Helper function to convert sqrtPriceX96 to human-readable USDC per WBTC
+    function _getToken0PriceFromSqrtPrice(uint160 sqrtPriceX96, uint256 baseDecimals) internal pure returns (uint256) {
+        return FullMath.mulDiv(uint256(sqrtPriceX96) * uint256(sqrtPriceX96), baseDecimals, 1 << 192);
+    }
 
-        // console.log("target assets", targetAssets);
-
-        // assertEq(IERC20(WBTC).balanceOf(bob), targetAssets, "bob should hold all of the target assets");
-        // assertEq(
-        //     hookableAssetAcquisition.getTargetAssets(),
-        //     0,
-        //     "HookableAssetAcquisition should not have any remaining target assets"
-        // );
-        // assertEq(hookableAssetAcquisition.getHodling(), 0, "HookableAssetAcquisition should have 0 hodling");
-
-        // (uint256 bobAssets, uint256 bobUpdate, uint256 bobHodl) = hookableAssetAcquisition.getUser(bob);
-
-        // assertEq(bobHodl, 0, "bob should have 0 hodl");
+    // Helper function to convert sqrtPriceX96 to human-readable USDC per WBTC
+    function _getToken1PriceFromSqrtPrice(uint160 sqrtPriceX96, uint256 baseDecimals) internal pure returns (uint256) {
+        return FullMath.mulDiv(1 << 192, baseDecimals, uint256(sqrtPriceX96) * uint256(sqrtPriceX96));
     }
 
     function _swapOneWBTC(PoolKey memory key) internal {

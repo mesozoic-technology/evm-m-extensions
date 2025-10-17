@@ -75,16 +75,7 @@ abstract contract HookableAssetAcquisitionStorageLayout {
     }
 }
 
-contract HookableAssetAcquisition is
-    IHookableAssetAcquisition,
-    HookableAssetAcquisitionStorageLayout,
-    Initializable,
-    IConditionalOrder
-{
-    using GPv2Order for GPv2Order.Data;
-    using CoWTWAPLib for CoWTWAPLib.TWAPConfig;
-    using CoWTWAPLib for CoWTWAPLib.TWAPState;
-
+contract HookableAssetAcquisition is IHookableAssetAcquisition, HookableAssetAcquisitionStorageLayout, Initializable {
     /// @custom:oz-upgrades-unsafe-allow state-variable-immutable
     address public immutable swapAdapter;
 
@@ -218,22 +209,6 @@ contract HookableAssetAcquisition is
         return _getHookableAssetAcquisitionStorageLocation().uniswapTWAMMOrderKeys[index];
     }
 
-    function getActiveTWAPStatus()
-        public
-        view
-        returns (uint256 totalAmount, uint256 numParts, uint256 currentPart, uint256 amountSold, uint256 amountBought)
-    {
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-        CoWTWAPLib.TWAPState storage state = $.twapStates[$.activeTWAPId];
-        CoWTWAPLib.TWAPConfig storage config = $.twapConfigs[$.activeTWAPId];
-
-        totalAmount = config.totalAmount;
-        numParts = config.numberOfParts;
-        currentPart = state.currentPart;
-        amountSold = state.amountSold;
-        amountBought = state.amountBought;
-    }
-
     function getHookingAssets() public view returns (uint256) {
         return _getHookableAssetAcquisitionStorageLocation().hookingAssets;
     }
@@ -257,10 +232,6 @@ contract HookableAssetAcquisition is
         _spotSwap();
     }
 
-    function cowSwapTWAP() public {
-        _cowSwapTWAP();
-    }
-
     function twammSwap() public {
         _twammSwap();
     }
@@ -279,198 +250,6 @@ contract HookableAssetAcquisition is
         $.uniswapPoolManager = _uniswapPoolManager;
         $.uniswapTWAMMHook = _uniswapTWAMMHook;
         $.uniswapPoolKey = _uniswapPoolKey;
-    }
-
-    /**
-     * @notice Implementation of IConditionalOrder for TWAP orders
-     */
-    function getTradeableOrder(
-        address owner,
-        address sender,
-        bytes calldata staticInput,
-        bytes calldata offchainData
-    ) external view returns (GPv2Order.Data memory order) {
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-
-        // Decode TWAP ID from static input
-        bytes32 twapId = abi.decode(staticInput, (bytes32));
-
-        CoWTWAPLib.TWAPConfig memory config = $.twapConfigs[twapId];
-        CoWTWAPLib.TWAPState memory state = $.twapStates[twapId];
-
-        // Check if next part is ready
-        (bool ready, uint256 partNumber) = CoWTWAPLib.isNextPartReady(config, state);
-        require(ready, "TWAP part not ready");
-
-        // Create order for this part
-        CoWTWAPLib.TWAPOrderParams memory params = CoWTWAPLib.TWAPOrderParams({
-            config: config,
-            state: state,
-            receiver: address(this),
-            appData: bytes32(0)
-        });
-
-        (order, ) = CoWTWAPLib.createPartOrder(params);
-    }
-
-    /**
-     * @notice EIP-1271 signature validation for TWAP orders
-     */
-    function isValidSignature(bytes32 orderHash, bytes memory signature) external view returns (bytes4) {
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-
-        if (signature.length < 32) return bytes4(0);
-
-        bytes32 twapId = abi.decode(signature, (bytes32));
-
-        CoWTWAPLib.TWAPConfig memory config = $.twapConfigs[twapId];
-        CoWTWAPLib.TWAPState memory state = $.twapStates[twapId];
-
-        if (!config.isActive) return bytes4(0);
-
-        // Verify this is a valid TWAP part order
-        (bool ready, ) = CoWTWAPLib.isNextPartReady(config, state);
-        if (!ready) return bytes4(0);
-
-        // Reconstruct expected order
-        try this.getTradeableOrder(address(this), msg.sender, abi.encode(twapId), "") returns (
-            GPv2Order.Data memory expectedOrder
-        ) {
-            bytes32 expectedHash = GPv2Order.hash(expectedOrder, CoWTWAPLib.DOMAIN_SEPARATOR);
-
-            if (orderHash == expectedHash) {
-                return CoWTWAPLib.EIP1271_MAGIC_VALUE;
-            }
-        } catch {
-            return bytes4(0);
-        }
-
-        return bytes4(0);
-    }
-
-    /**
-     * @notice Called after each TWAP part execution
-     * @param twapId The TWAP identifier
-     * @param amountSold Amount sold in this part
-     * @param amountBought Amount bought (USDC) in this part
-     */
-    function recordTWAPExecution(bytes32 twapId, uint256 amountSold, uint256 amountBought) external {
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-
-        // Record the execution
-        $.twapStates[twapId].recordPartExecution(amountSold, amountBought);
-
-        // Check if TWAP is complete
-        if (CoWTWAPLib.isTWAPComplete($.twapConfigs[twapId], $.twapStates[twapId])) {
-            $.twapConfigs[twapId].completeTWAP($.twapStates[twapId]);
-            // $.activeTWAPId = bytes32(0);
-        }
-    }
-
-    /**
-     * @notice Verify if a given discrete order is valid for TWAP execution
-     * @dev Required by IConditionalOrder interface - reverts if order is invalid
-     * @param owner The contract that owns the order (should be this contract)
-     * @param sender The msg.sender of the transaction
-     * @param _hash The hash of the order
-     * @param domainSeparator The domain separator used to sign the order
-     * @param ctx The context key of the order
-     * @param staticInput The TWAP ID encoded as bytes
-     * @param offchainInput Dynamic off-chain input (not used for TWAP)
-     * @param order The GPv2Order.Data to be verified
-     */
-    function verify(
-        address owner,
-        address sender,
-        bytes32 _hash,
-        bytes32 domainSeparator,
-        bytes32 ctx,
-        bytes calldata staticInput,
-        bytes calldata offchainInput,
-        GPv2Order.Data calldata order
-    ) external view override {
-        // Verify owner is this contract
-        require(owner == address(this), "Invalid owner");
-
-        // Verify domain separator matches
-        require(domainSeparator == CoWTWAPLib.DOMAIN_SEPARATOR, "Invalid domain separator");
-
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-
-        // Decode TWAP ID from static input
-        bytes32 twapId;
-        if (staticInput.length >= 32) {
-            twapId = abi.decode(staticInput, (bytes32));
-        } else {
-            revert("Invalid static input");
-        }
-
-        // Verify TWAP exists and is active
-        CoWTWAPLib.TWAPConfig memory config = $.twapConfigs[twapId];
-        CoWTWAPLib.TWAPState memory state = $.twapStates[twapId];
-
-        require(config.isActive, "TWAP not active");
-        require(twapId == $.activeTWAPId, "TWAP not current");
-
-        {
-            // Verify timing - next part should be ready
-            (bool ready, uint256 expectedPartNumber) = CoWTWAPLib.isNextPartReady(config, state);
-            require(ready, "Next TWAP part not ready");
-        }
-
-        // Verify we haven't completed all parts
-        require(state.currentPart < config.numberOfParts, "TWAP already completed");
-
-        // Verify order parameters match expected TWAP configuration
-        require(address(order.sellToken) == config.sellToken, "Sell token mismatch");
-        require(address(order.buyToken) == config.buyToken, "Buy token mismatch");
-        require(order.receiver == address(this), "Receiver must be this contract");
-        require(order.kind == GPv2Order.KIND_SELL, "Must be sell order");
-
-        // Calculate expected sell amount for this part
-        uint256 remainingAmount = config.totalAmount - state.amountSold;
-        uint256 expectedSellAmount = remainingAmount / (config.numberOfParts - state.currentPart);
-
-        // For last part, sell everything remaining
-        if (state.currentPart == config.numberOfParts - 1) {
-            expectedSellAmount = remainingAmount;
-        }
-
-        // Verify sell amount matches expected
-        require(order.sellAmount == expectedSellAmount, "Sell amount mismatch");
-
-        // Verify buy amount meets minimum requirements
-        if (config.minPartLimit > 0) {
-            require(order.buyAmount >= config.minPartLimit, "Buy amount below minimum");
-        }
-
-        // Verify order validity window is reasonable
-        require(order.validTo > block.timestamp, "Order already expired");
-        require(
-            order.validTo <= block.timestamp + 3600, // Max 1 hour validity
-            "Order validity too long"
-        );
-
-        // Verify order hash matches
-        bytes32 expectedHash = order.hash(domainSeparator);
-        require(_hash == expectedHash, "Order hash mismatch");
-
-        // Verify token balances are sufficient
-        uint256 balance = IERC20(config.sellToken).balanceOf(address(this));
-        require(balance >= order.sellAmount, "Insufficient balance");
-
-        // Verify approvals are in place
-        uint256 allowance = IERC20(config.sellToken).allowance(address(this), CoWTWAPLib.COW_VAULT_RELAYER);
-        require(allowance >= order.sellAmount, "Insufficient approval");
-
-        // Additional sanity checks
-        require(order.feeAmount == 0, "Fee should be zero");
-        require(!order.partiallyFillable, "Should not be partially fillable");
-        require(order.sellTokenBalance == GPv2Order.BALANCE_ERC20, "Invalid sell token balance flag");
-        require(order.buyTokenBalance == GPv2Order.BALANCE_ERC20, "Invalid buy token balance flag");
-
-        // If we reach here, order is valid
-        // Function will not revert, indicating verification passed
     }
 
     function _activateUser(address _user) internal {
@@ -547,50 +326,10 @@ contract HookableAssetAcquisition is
         $.yieldedAssets = 0;
     }
 
-    function _cowSwapTWAP() internal {
-        HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
-
-        require($.yieldedAssets > 0, "No yield to swap");
-        require($.activeTWAPId == bytes32(0), "TWAP already active");
-
-        uint256 intermediateUSDC = _swapYieldToUSDC();
-
-        // Generate unique TWAP ID
-        bytes32 twapId = keccak256(abi.encode(address(this), USDC, $.targetAsset, block.timestamp));
-
-        // Create TWAP for hookingAsset -> USDC
-        $.twapConfigs[twapId].createTWAP(
-            USDC,
-            $.targetAsset,
-            intermediateUSDC,
-            10, // number of parts
-            600 // part duration
-        );
-
-        // Initialize state
-        $.twapStates[twapId] = CoWTWAPLib.TWAPState({
-            currentPart: 0,
-            lastPartExecuted: 0,
-            amountSold: 0,
-            amountBought: 0
-        });
-
-        $.activeTWAPId = twapId;
-
-        // Register with ComposableCoW
-        CoWTWAPLib.registerTWAPWithComposableCoW(address(this), twapId);
-    }
-
     function _twammSwap() internal {
-        // address uniswapPoolManager;
-        // address uniswapTWAMMHook;
-        // PoolKey uniswapPoolKey;
-
         HookableAssetAcquisitionStorageStruct storage $ = _getHookableAssetAcquisitionStorageLocation();
 
         uint256 intermediateUSDC = _swapYieldToUSDC();
-
-        console.log("intermediate", intermediateUSDC);
 
         IERC20(USDC).approve($.uniswapTWAMMHook, intermediateUSDC);
 
@@ -603,13 +342,8 @@ contract HookableAssetAcquisition is
 
         (bytes32 orderId, ITWAMM.OrderKey memory orderKey) = ITWAMM($.uniswapTWAMMHook).submitOrder(orderParams);
 
-        console.log("order id");
-        console.logBytes32(orderId);
-
         $.uniswapTWAMMOrderIds.push(orderId);
         $.uniswapTWAMMOrderKeys.push(orderKey);
-
-        console.log("order key", orderKey.owner, orderKey.expiration, orderKey.zeroForOne);
     }
 
     function _twammClaim() internal {
