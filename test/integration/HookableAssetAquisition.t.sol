@@ -21,10 +21,6 @@ import { HookableAssetAcquisitionHarness } from "../harness/HookableAssetAcquisi
 
 import { BaseIntegrationTest } from "../utils/BaseIntegrationTest.sol";
 
-import { GPv2Order } from "../../src/libs/CoWTWAP/GPv2Order.sol";
-import { CoWTWAPLib } from "../../src/libs/CoWTWAP/CoWTWAP.sol";
-import { IConditionalOrder } from "../../src/libs/CoWTWAP/IConditionalOrder.sol";
-
 import { IHooks, Hooks } from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import { IPoolManager } from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -404,53 +400,6 @@ contract HookableAssetAcquisitionIntegrationTest is BaseIntegrationTest {
             type(TWAMM).creationCode,
             constructorArgs
         );
-    }
-
-    function _mockSettlementWithActualTokens(
-        GPv2Order.Data memory order,
-        uint256 iteration
-    ) internal returns (uint256 wbtcReceived) {
-        // Verify approval is in place
-        uint256 allowance = order.sellToken.allowance(address(hookableAssetAcquisition), CoWTWAPLib.COW_VAULT_RELAYER);
-        require(allowance >= order.sellAmount, "Insufficient approval");
-
-        console.log("hmmmm");
-
-        // 1. Mock settlement pulling tokens from your contract
-        vm.startPrank(CoWTWAPLib.COW_VAULT_RELAYER);
-        order.sellToken.transferFrom(address(hookableAssetAcquisition), CoWTWAPLib.COW_VAULT_RELAYER, order.sellAmount);
-
-        // 2. Calculate swap output using actual Uniswap quotes
-        // In reality, CoW would route through multiple DEXs
-        uint256 wbtcReceived = _getActualSwapQuote(order.sellAmount, iteration);
-
-        vm.stopPrank();
-        console.log("xmmmm", wbtcReceived);
-        console.log("zmmmm", WBTC);
-        console.log("vr", IERC20(WBTC).balanceOf(alice));
-        console.log("WBTC ALICE", IERC20(WBTC).balanceOf(alice));
-        vm.startPrank(alice);
-        IERC20(WBTC).transfer(CoWTWAPLib.COW_VAULT_RELAYER, wbtcReceived);
-        vm.stopPrank();
-
-        console.log("zmmmm", WBTC);
-        console.log("vr", IERC20(WBTC).balanceOf(CoWTWAPLib.COW_VAULT_RELAYER));
-        // 4. Settlement sends USDC to acquisition contract
-        vm.startPrank(CoWTWAPLib.COW_VAULT_RELAYER);
-        IERC20(WBTC).transfer(order.receiver, wbtcReceived);
-        vm.stopPrank();
-
-        return wbtcReceived;
-    }
-    /**
-     * @notice Get actual swap quote from Uniswap
-     * @dev This queries actual liquidity but doesn't execute the swap
-     */
-    function _getActualSwapQuote(uint256 sellAmount, uint256 iteration) internal view returns (uint256) {
-        // price of one bitcoin in usdc
-        uint256 wbtcPrice = (100 + iteration) * 1e6;
-        // amount of wbtc for sell amount adjusted to 8 decimals
-        return (sellAmount * wbtcPrice) / 1e12;
     }
 
     function test_uniswapHook() public {

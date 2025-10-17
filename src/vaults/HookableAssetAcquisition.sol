@@ -17,11 +17,6 @@ import { IUniswapV3SwapAdapter } from "../swap/interfaces/IUniswapV3SwapAdapter.
 import { IV3SwapRouter } from "../swap/interfaces/uniswap/IV3SwapRouter.sol";
 import { IHookableAssetAcquisition } from "./IHookableAssetAcquisition.sol";
 
-// CoW imports
-import { GPv2Order } from "../libs/CoWTWAP/GPv2Order.sol";
-import { CoWTWAPLib } from "../libs/CoWTWAP/CoWTWAP.sol";
-import { IConditionalOrder } from "../libs/CoWTWAP/IConditionalOrder.sol";
-
 // Uniswap imports
 import { PoolKey } from "@uniswap/v4-core/src/types/PoolKey.sol";
 import { Currency } from "@uniswap/v4-core/src/types/Currency.sol";
@@ -41,10 +36,6 @@ abstract contract HookableAssetAcquisitionStorageLayout {
         uint256 hodling; // seconds per unit held globally.
         uint256 update;
         mapping(address => User) users;
-        // CoW TWAP state
-        mapping(bytes32 => CoWTWAPLib.TWAPConfig) twapConfigs;
-        mapping(bytes32 => CoWTWAPLib.TWAPState) twapStates;
-        bytes32 activeTWAPId;
         // Uniswap TWAMM state
         address uniswapPoolManager;
         address uniswapTWAMMHook;
@@ -195,10 +186,6 @@ contract HookableAssetAcquisition is IHookableAssetAcquisition, HookableAssetAcq
 
     function getYieldedAssets() public view returns (uint256) {
         return _getHookableAssetAcquisitionStorageLocation().yieldedAssets;
-    }
-
-    function getActiveTWAPId() public view returns (bytes32) {
-        return _getHookableAssetAcquisitionStorageLocation().activeTWAPId;
     }
 
     function getTWAMMOrderId(uint256 index) public view returns (bytes32) {
